@@ -1,0 +1,13 @@
+# Ren'Py bytecode and compiled scripts
+game/*.rpyc
+*.rpyc
+**/cache/
+**/saves/
+
+# Backups
+*.bak
+*.wysiwyg.bak
+
+# OS specific files
+.DS_Store
+Thumbs.db
