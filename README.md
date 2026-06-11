@@ -59,6 +59,50 @@ No more guess-and-test positioning or editing coordinates in your text editor. J
 
 ---
 
+## Interface & Controls Reference
+
+### 1. Global Toolbar (Top)
+- **Characters** (Tab): Selects the character editing panel. (Additional tabs for *UI* and *Text* are currently prepared for future expansions).
+- **Import Scene**: Scans the active Ren'Py master layer, finds the exact source files and lines, and loads the sprites into the editor.
+- **Save Changes**: Rewrites the mapped lines in your `.rpy` files in-place with the updated `Transform` code.
+- **Undo**: Undoes the last modification (holds up to 50 steps).
+- **Show Code**: Opens the side-by-side code comparison panel to preview modifications before writing to disk.
+- **Guides**: Toggles vertical/horizontal alignment snapping lines (Left at 25%, Center at 50%, Right at 75%, Top, and Bottom).
+- **Grid**: Toggles a 100px-step background alignment grid.
+- **Clear Editor**: Resets the editor state, discarding all unsaved transformations.
+- **Close**: Safely exits the editor, restoring the scene back to its pre-editor state.
+
+### 2. Base Controls Panel
+- **Reset Pos**: Restores the character's X and Y coordinates to their initial imported state.
+- **Reset Transform**: Restores the character's scale, rotation, and opacity back to the values originally defined in the script.
+- **Defaults**: Resets the character to default parameters (rotation `0`, scale `1.0`, opacity `1.0`).
+- **At Left / At Center / At Right**: Snaps the character to standard Ren'Py horizontal alignments.
+- **Flip H / Flip V**: Mirrors the character horizontally or vertically (toggles negative `xzoom` or `yzoom`).
+- **Rotation Slider**: Rotates the character between `-180°` and `180°`.
+- **Linked / Unlinked**: Locks or unlocks the scale aspect ratio. When locked, scaling the X axis scales the Y axis proportionally.
+- **Scale Sliders**: Changes the character's zoom level.
+- **Opacity Slider**: Changes the character's transparency (`alpha`) from `0.0` (invisible) to `1.0` (opaque).
+- **Nudge Buttons (`◄`, `►`, `▲`, `▼`)**: Move the selected character in 1px or 10px increments.
+- **Nudge Step Toggle**: Click the **Step 1px / Step 10px** button to toggle the movement resolution for both the screen buttons and your keyboard's arrow keys.
+
+> [!TIP]
+> **In-place Value Editing**: You can click directly on the **Coordinates label** (`x=... y=...`), the **Rotation angle**, or the **Scale values** in the panel to turn them into manual input fields. This allows you to type exact numbers from your keyboard (e.g. typing `960, 540` to set the center position, `45.5` for rotation, or `0.85` for scale). Press **Enter** to commit the value.
+
+### 3. Color Filters Panel
+- **Defaults**: Resets all color matrix transformations back to their original values.
+- **Reset (next to sliders)**: Resets only that specific filter back to its default state.
+- **Blur**: Gaussian blur in pixels (`0px` to `20px`).
+- **Brightness**: Adjusts image brightness matrix.
+- **Contrast / Saturation / Hue / Invert**: Adjusts respective color filters dynamically.
+- **Sepia ON/OFF**: Toggles a custom sepia matrix.
+
+### 4. Motion FX Panel
+- **Defaults**: Disables active motion animations.
+- **Breathe / Shake / Float / Sway / Bounce / Sink / Blink**: Selects and runs the corresponding animation loop on the active character.
+- **Strength**: Adjusts the speed, range, or amplitude of the selected animation.
+
+---
+
 ## Installation
 
 1. Copy the file `wysiwyg_editor.rpy` into the `game/` directory of your Ren'Py project.
