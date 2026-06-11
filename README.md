@@ -28,6 +28,10 @@ No more guess-and-test positioning or editing coordinates in your text editor. J
 ![Transformations](assets/editor_menu_05.jpg)
 *Demonstration of precise rotation adjustments, linked/unlinked scaling, and image flipping.*
 
+### 6. Code Compare Panel (Show Code)
+![Code Compare](assets/editor_menu_06.jpg)
+*Side-by-side comparison of the original script lines vs. the newly generated code before writing to disk.*
+
 ---
 
 ## Key Features
@@ -94,6 +98,11 @@ Before modifying any file, the editor automatically creates a backup copy with a
 > If you make manual code changes in an external editor and want to refresh this baseline backup, simply delete the old `.wysiwyg.bak` file. A new one will be generated automatically on your next save.
 
 To restore an original file, replace the modified `.rpy` file with the corresponding `.bak` backup.
+
+### Non-interactive Quit Confirmation Block
+If you click the OS window's close **"X"** button to exit the game while the editor overlay is open, Ren'Py's default quit confirmation prompt ("Are you sure you want to quit?") will appear, but you will be unable to click "Yes" or "No". 
+
+This occurs because the active editor screen uses `modal True`, which intercepts all inputs and blocks interaction with the screens underneath it. To close the game, simply close the editor first (by pressing **F5** or clicking **Close**), and you will then be able to interact with the quit prompt.
 
 ---
 

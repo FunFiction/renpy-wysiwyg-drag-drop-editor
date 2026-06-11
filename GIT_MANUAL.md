@@ -105,3 +105,9 @@ The editor automatically creates backups named `<file>.rpy.wysiwyg.bak` inside t
 - **One-time baseline behavior:** The editor **never overwrites** an existing `.wysiwyg.bak` file, meaning it permanently preserves the original state of your code from before the editor first touched it.
 - **Refreshing backups:** If you make manual code edits in an external IDE and want to refresh the backup baseline, delete the old `.wysiwyg.bak` file. A new one will be generated on the next save in the editor.
 - **Restoring:** To roll back, replace the modified `.rpy` file with the corresponding `.bak` backup file.
+
+### Non-interactive Quit Confirmation Block
+If you click the OS window's close **"X"** button to exit the game while the editor overlay is open, Ren'Py's default quit confirmation prompt will appear, but you will be unable to click "Yes" or "No". 
+
+This is because the active editor screen uses `modal True`, which intercepts all inputs and blocks interaction with the screens underneath it. To close the game, simply close the editor first (by pressing **F5** or clicking **Close**), and you will then be able to interact with the quit prompt.
+
