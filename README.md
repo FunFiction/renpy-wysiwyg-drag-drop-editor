@@ -51,9 +51,8 @@ No more guess-and-test positioning or editing coordinates in your text editor. J
   - Layout presets (At Left, At Center, At Right).
 - **Color Filters**: Apply live filters including Blur (px), Brightness, Contrast, Saturation, Hue rotation, Inversion, and Sepia matrices using `matrixcolor`.
 - **Motion FX Animations**: Toggle built-in animated effects (breathe, shake, float, sway, bounce, sink, blink) with adjustable strength.
-- **Grid & Alignment Snapping**:
-  - Snap sprites to Left (25%), Center (50%), Right (75%), Top, or Bottom screen lines.
-  - Toggleable grid overlay with 100px steps.
+- **Grid Overlay**:
+  - Toggleable background grid overlay with 100px steps to help with visual alignment.
 - **Undo Stack**: Maintains a history of up to 50 operations.
 - **Code Compare Panel**: View your original source lines side-by-side with the generated code before writing to disk.
 
@@ -67,8 +66,7 @@ No more guess-and-test positioning or editing coordinates in your text editor. J
 - **Save Changes**: Rewrites the mapped lines in your `.rpy` files in-place with the updated `Transform` code.
 - **Undo**: Undoes the last modification (holds up to 50 steps).
 - **Show Code**: Opens the side-by-side code comparison panel to preview modifications before writing to disk.
-- **Guides**: Toggles vertical/horizontal alignment snapping lines (Left at 25%, Center at 50%, Right at 75%, Top, and Bottom).
-- **Grid**: Toggles a 100px-step background alignment grid.
+- **Grid**: Toggles a 100px-step background alignment grid to help with visual alignment.
 - **Clear Editor**: Resets the editor state, discarding all unsaved transformations.
 - **Close**: Safely exits the editor, restoring the scene back to its pre-editor state.
 
