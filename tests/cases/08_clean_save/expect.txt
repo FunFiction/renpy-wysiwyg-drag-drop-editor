@@ -1,0 +1,6 @@
+MATCH IMPORT: Imported 1 editable \+ 1 locked character\(s\)
+NOMATCH EXC
+MATCH SAVE: No changes to save
+MATCH IDENTICAL: True
+# no edits means no backups either
+MATCH BACKUPS-CREATED: False

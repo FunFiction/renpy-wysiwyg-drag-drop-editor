@@ -1,0 +1,14 @@
+MATCH IMPORT: Imported 1 character\(s\)
+NOMATCH EXC
+# browser: images/ only (recursive), bad names blocked, decoys invisible
+MATCH BROWSER: 2bad name!\(BLOCKED\); hero happy; buddy
+MATCH OUTSIDE-IMAGES-LEAK: \[\]
+NOMATCH outsider
+NOMATCH rootfile
+MATCH COLLISION: Tag 'existing' is already tracked
+MATCH DISCARD-LEAK: \[\]
+MATCH SAVE: Saved 2 changed line\(s\), verified
+# inserted in add order, right before the paused statement
+FILEMATCH script.rpy show hero happy at Transform\(xpos=204, ypos=300
+FILEMATCH script.rpy show buddy at Transform\(xpos=904, ypos=300
+FILEMATCH script.rpy (?s)show hero happy.*show buddy.*\$ selftest\(\)

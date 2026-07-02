@@ -1,0 +1,13 @@
+# Two runs; checks describe the SECOND one. Run 1 opens the editor while
+# the game waits on menu:, adds a sprite and saves. If that insert were
+# malformed, run 2 would not parse, would not import two characters, and
+# the file check below would fail.
+RUNS 2
+MATCH IMPORT: Imported 2 character\(s\)
+NOMATCH EXC
+MATCH PAUSED-AT: 'menu:'
+MATCH ADD: Tag 'hero' is already tracked
+MATCH SAVE: No changes to save
+# exactly one inserted line, directly above menu: at the same indent
+FILEMATCH script.rpy (?m)^    show hero happy at Transform\(.*\)\n    menu:$
+FILENOMATCH script.rpy (?m)show hero happy.*\n.*show hero happy

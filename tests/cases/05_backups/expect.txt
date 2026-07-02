@@ -1,0 +1,12 @@
+MATCH IMPORT: Imported 3 editable \+ 1 locked character\(s\)
+NOMATCH EXC
+MATCH SAVE-1: Saved 3 changed line\(s\), verified
+MATCH SAVE-2: Saved 1 changed line\(s\), verified
+MATCH SAVE-3: No changes to save
+# two script.rpy backups (two saves touched it), one per sub file,
+# and the colliding flattened names stay in separate directories
+MATCH BACKUP-TREE: script\.rpy\.[0-9-]+(-1)?\.bak; script\.rpy\.[0-9-]+(-1)?\.bak; sub/extra\.rpy\.[0-9-]+\.bak; sub_extra\.rpy\.[0-9-]+\.bak
+# locked eileen untouched despite the forced dirty
+FILEMATCH script.rpy show eileen happy at wobble$
+FILEMATCH sub/extra.rpy show g1 at Transform\(xpos=9\d\d, ypos=200
+FILEMATCH sub_extra.rpy show g2 at Transform\(xpos=11\d\d, ypos=200

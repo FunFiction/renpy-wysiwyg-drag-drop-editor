@@ -1,0 +1,18 @@
+# Two runs: the second proves the rewritten lines parse and round-trip
+# (its CLEAN-SAVE must write nothing).
+RUNS 2
+MATCH IMPORT: Imported 4 character\(s\)
+MATCH CLEAN-SAVE: No changes to save
+MATCH SAVE: Saved 4 changed line\(s\), verified
+NOMATCH EXC
+# eileen: single line now, comment and dissolve preserved
+FILEMATCH script.rpy show eileen happy at Transform\(xpos=\d+, ypos=\d+, xanchor=0\.5.*# keep me
+# lucy: ATL block replaced, no orphans left behind
+FILEMATCH script.rpy show lucy mad at Transform\(
+FILENOMATCH script.rpy ^\s*ypos 300\s*$
+FILENOMATCH script.rpy ^stray block comment
+FILENOMATCH script.rpy ^\s*# indented block comment
+# blob: expression + as survive
+FILEMATCH script.rpy show expression Solid\(.*\) at Transform\(.*\) as blob.*with dissolve
+# marc: behind survives
+FILEMATCH script.rpy show marc neutral at Transform\(.*\) behind lucy

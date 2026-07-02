@@ -1,0 +1,34 @@
+MATCH IMPORT: Imported 6 editable \+ 11 locked character\(s\)
+NOMATCH EXC
+MATCH TAG a1: locked="uses transform 'wobble'"
+MATCH TAG a2: locked="uses transform 'Transform\(xpos=100, ypos=100, function=slow_fn\)'"
+MATCH TAG a3: locked="uses transform 'wobble'"
+MATCH TAG a4: locked=None
+MATCH TAG a5: locked='animated ATL block'
+MATCH TAG a6: locked=None
+MATCH TAG a7: locked="uses transform 'Transform\(xpos=500, ypos=100, zoom=1\.5\)'"
+MATCH TAG a8: locked="uses transform 'Transform\(xpos=600, ypos=100, alpha=\.5\)'"
+MATCH TAG a9: locked="uses transform 'Transform\(xpos=700, ypos=100, rotate=my_rot\)'"
+MATCH TAG b1: locked=None
+MATCH TAG b2: locked=None
+MATCH TAG dana: locked='inherits a transform from an earlier show'
+MATCH TAG ewa: locked=None
+MATCH TAG greg: locked='inherits a transform from an earlier show'
+MATCH TAG iga: locked='inherits a transform from an earlier show'
+MATCH TAG fred: locked=None
+MATCH TAG pysprite: locked='shown from code \(no source line\)'
+MATCH SAVE: Saved 6 changed line\(s\), verified
+# locked lines stay byte-identical
+FILEMATCH script.rpy show a1 at wobble$
+FILEMATCH script.rpy show a7 at Transform\(xpos=500, ypos=100, zoom=1\.5\)$
+FILEMATCH script.rpy show a8 at Transform\(xpos=600, ypos=100, alpha=\.5\)$
+FILEMATCH script.rpy show dana happy$
+FILEMATCH script.rpy show greg happy$
+# editable values round-trip
+FILEMATCH script.rpy show b1 at Transform\(.*alpha=0\.5\)
+FILEMATCH script.rpy show b2 at Transform\(.*rotate=15, xzoom=0\.8, yzoom=0\.8.*\)
+FILEMATCH script.rpy show ewa happy at Transform\(
+FILEMATCH script.rpy show fred happy at Transform\(
+# a4's block was replaced without orphans
+FILEMATCH script.rpy show a4 at Transform\(
+FILENOMATCH script.rpy ^\s*xpos 300 ypos 100\s*$

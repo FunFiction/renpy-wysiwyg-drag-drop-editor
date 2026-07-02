@@ -1,13 +1,11 @@
-# Ren'Py bytecode and compiled scripts
-game/*.rpyc
+log.txt
+traceback.txt
+errors.txt
 *.rpyc
-**/cache/
-**/saves/
-
-# Backups
+*.rpyb
+game/cache/
+game/saves/
+game/wysiwyg_backups/
+game/wysiwyg_debug.txt
+tests/build/
 *.bak
-*.wysiwyg.bak
-
-# OS specific files
-.DS_Store
-Thumbs.db

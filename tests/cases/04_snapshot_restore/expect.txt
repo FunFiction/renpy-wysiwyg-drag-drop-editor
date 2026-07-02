@@ -1,0 +1,10 @@
+MATCH IMPORT: Imported 1 editable \+ 1 locked character\(s\)
+NOMATCH EXC
+MATCH RESTORE-MATCH: True
+MATCH SAVE: Saved 1 changed line\(s\), verified
+MATCH SNAPSHOT-AFTER-SAVE: None
+# center 550 (xpos 400 + half of 300) plus the saved +50 - NOT the +30 tweak
+MATCH SHOWN-XPOS: 600
+FILEMATCH script.rpy show eileen happy at Transform\(xpos=600, ypos=600
+# lucy's animation block untouched
+FILEMATCH script.rpy ^\s*linear 0\.5 ypos 280\s*$

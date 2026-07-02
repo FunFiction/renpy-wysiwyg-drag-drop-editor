@@ -2368,6 +2368,19 @@ init -2 python:
             pending = []
             entries.append((entry, span))
             scan += span
+        # Trailing comment lines indented deeper than the header belong to
+        # the block and are deleted with it; a blank line or a comment at
+        # header level (or shallower) separates the NEXT statement and
+        # everything from it on stays.
+        for entry, span in pending:
+            body = entry.full_text
+            if body.endswith("\n"):
+                break
+            stripped = body.rstrip("#")
+            indent = len(stripped) - len(stripped.lstrip())
+            if indent <= header_indent:
+                break
+            entries.append((entry, span))
         return entries
 
     def wysiwyg_atl_block_is_static(filename, line):

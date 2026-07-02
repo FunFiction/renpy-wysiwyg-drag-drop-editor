@@ -1,0 +1,6 @@
+MATCH IMPORT: Imported 1 character\(s\)
+NOMATCH EXC
+# the statement that actually ran most recently, resolved with full
+# confidence - not the day-one branch the deduped engine log would pick
+MATCH SRC tag=eileen conf=linelog line-text='show eileen happy at Transform\(xpos=400, ypos=300\)\s*# day-loop-show'
+NOMATCH day-one-show
