@@ -112,7 +112,7 @@ def run_case(name, case_dir, build_root, sdk, keep):
                 haystack = handle.read()
             label = rel
         found = re.search(pattern, haystack, re.M)
-        if kind.endswith("MATCH") and not kind.startswith("NO") and not kind.startswith("FILENO"):
+        if kind in ("MATCH", "FILEMATCH"):
             if not found:
                 failures.append("expected in %s: /%s/" % (label, pattern))
         else:

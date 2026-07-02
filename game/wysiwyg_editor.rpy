@@ -118,8 +118,14 @@ init -2 python:
                 if not WYSIWYG_RUNTIME.exec_log_registered:
                     config.line_log_callbacks.append(wysiwyg_line_log_callback)
                     WYSIWYG_RUNTIME.exec_log_registered = True
+        def _after_load():
+            _enable()
+            # The newest exec_log entries describe the timeline abandoned by
+            # this load; keeping them would resolve tags to statements the
+            # loaded game never executed, with full "linelog" confidence.
+            del WYSIWYG_RUNTIME.exec_log[:]
         config.start_callbacks.append(_enable)
-        config.after_load_callbacks.append(_enable)
+        config.after_load_callbacks.append(_after_load)
 
     def wysiwyg_line_log_callback(entry):
         # Fires from LineLogEntry.__init__ on EVERY executed statement,
@@ -375,7 +381,11 @@ init -2 python:
             WYSIWYG_RUNTIME.first_backup[path] = backup
         try:
             keep = WYSIWYG_RUNTIME.first_backup.get(path)
-            mine = sorted([f for f in os.listdir(backup_dir) if f.startswith(base + ".") and f.endswith(".bak")])
+            # Sort by mtime: lexical order puts "...-1.bak" counter suffixes
+            # BEFORE their base stamp, which would prune the newest backups
+            # first in a same-second burst of saves.
+            mine = [f for f in os.listdir(backup_dir) if f.startswith(base + ".") and f.endswith(".bak")]
+            mine.sort(key=lambda f: os.path.getmtime(os.path.join(backup_dir, f)))
             for old in mine[:-10]:
                 full = os.path.join(backup_dir, old)
                 if full != keep:
@@ -412,8 +422,14 @@ init -2 python:
                 data = handle.read()
         except Exception as exc:
             return "unreadable: " + str(exc)
+        import collections
         old_errors = renpy.parser.parse_errors
+        old_deferred = renpy.parser.deferred_parse_errors
         renpy.parser.parse_errors = []
+        # Deferred diagnostics (duplicate_id etc.) queued by this throwaway
+        # parse must not leak into the engine's global queue, or the next
+        # Shift+R reload reports parse errors the on-disk file doesn't have.
+        renpy.parser.deferred_parse_errors = collections.defaultdict(list)
         try:
             result = renpy.parser.parse(path, filedata=data)
             messages = list(renpy.parser.parse_errors)
@@ -422,9 +438,12 @@ init -2 python:
             messages = [str(exc)]
         finally:
             renpy.parser.parse_errors = old_errors
+            renpy.parser.deferred_parse_errors = old_deferred
         if result is None or messages:
-            if messages:
-                return str(messages[0]).strip().splitlines()[0]
+            for message in messages:
+                lines = str(message).strip().splitlines()
+                if lines:
+                    return lines[0]
             return "parse failed"
         return None
 
@@ -1521,8 +1540,17 @@ init -2 python:
         # branches: a show in an untaken branch can sit closer to the current
         # line than the one that actually ran.
         candidates = {}
+        # With nodes indexed by location in the same pass: a `with fade` on
+        # a show line becomes separate With statements at the same
+        # filename:line, and the rewritten line must carry them over.
+        with_by_loc = {}
 
         for node in getattr(renpy.game.script, "all_stmts", []):
+            if isinstance(node, renpy.ast.With):
+                expr_text = str(getattr(node, "expr", "") or "").strip()
+                if expr_text and expr_text != "None":
+                    with_by_loc[(str(getattr(node, "filename", "")), int(getattr(node, "linenumber", 0) or 0))] = expr_text
+                continue
             if is_bg:
                 if not isinstance(node, renpy.ast.Scene):
                     continue
@@ -1598,19 +1626,7 @@ init -2 python:
             if len(imspec) == 7:
                 behind = [str(i) for i in (imspec[6] or [])]
 
-        # A `with transition` on the same line becomes separate With nodes in
-        # the AST; capture the transition so the rewritten line keeps it.
-        with_expr = None
-        for node in getattr(renpy.game.script, "all_stmts", []):
-            if not isinstance(node, renpy.ast.With):
-                continue
-            if getattr(node, "filename", None) != best_node.filename:
-                continue
-            if getattr(node, "linenumber", None) != best_node.linenumber:
-                continue
-            expr_text = str(getattr(node, "expr", "") or "").strip()
-            if expr_text and expr_text != "None":
-                with_expr = expr_text
+        with_expr = with_by_loc.get((str(getattr(best_node, "filename", "")), int(getattr(best_node, "linenumber", 0) or 0)))
 
         return {
             "key": tag,
@@ -2065,29 +2081,7 @@ init -2 python:
         if renpy.scriptedit.lines.get((filename, line)) is None:
             raise Exception("insert target " + filename + ":" + str(line) + " is not editable")
 
-        try:
-            prev_autoreload = renpy.get_autoreload()
-        except Exception:
-            prev_autoreload = False
-        try:
-            renpy.set_autoreload(False)
-        except Exception:
-            pass
-
-        orig_replace_node = renpy.execution.Context.replace_node
-
-        def patched_replace_node(self, old, new):
-            def replace_one(name):
-                try:
-                    if renpy.game.script.lookup(name) is old:
-                        return new.name
-                except Exception:
-                    pass
-                return name
-            self.current = replace_one(self.current)
-            self.return_stack = [replace_one(i) for i in self.return_stack]
-
-        renpy.execution.Context.replace_node = patched_replace_node
+        surgery = wysiwyg_begin_ast_surgery()
         try:
             renpy.scriptedit.add_to_ast_before(code, filename, line)
             renpy.scriptedit.insert_line_before(code, filename, line)
@@ -2095,12 +2089,7 @@ init -2 python:
             if written_entry is None or written_entry.text.strip() != code.strip():
                 raise Exception("post-insert line check failed at " + filename + ":" + str(line))
         finally:
-            renpy.execution.Context.replace_node = orig_replace_node
-            if prev_autoreload:
-                try:
-                    renpy.set_autoreload(prev_autoreload)
-                except Exception:
-                    pass
+            wysiwyg_end_ast_surgery(surgery)
         return 1
 
     def wysiwyg_position_line_for_char(char):
@@ -2179,9 +2168,29 @@ init -2 python:
 
     def wysiwyg_line_comment_text(entry):
         # The trailing "# comment" of a logical line, or "" when there is
-        # none. scriptedit's full_text stops at the '#', so the body has to
-        # be read from the file itself.
+        # none. Lines the engine loaded from disk track the comment via
+        # full_text stopping at the '#'; lines the editor wrote itself
+        # (insert_line_before builds synthetic entries whose full_text is
+        # the whole line, newline included) carry the comment inside text,
+        # so a second save of the same line would silently drop it without
+        # the quote-aware scan below.
         if entry.full_text.endswith("\n"):
+            text = entry.text
+            quote = None
+            i = 0
+            while i < len(text):
+                ch = text[i]
+                if quote:
+                    if ch == "\\":
+                        i += 2
+                        continue
+                    if ch == quote:
+                        quote = None
+                elif ch in "\"'`":
+                    quote = ch
+                elif ch == "#":
+                    return text[i:].rstrip()
+                i += 1
             return ""
         try:
             with io.open(entry.filename, "r", encoding="utf-8") as handle:
@@ -2521,6 +2530,46 @@ init -2 python:
             return False
         return True
 
+    def wysiwyg_begin_ast_surgery():
+        # Shared setup for AST-mutating operations (replace and insert).
+        # replace_node is patched for the duration: a context's return stack
+        # can hold names no longer in the namemap, and the stock lookup
+        # raises instead of skipping them. Autoreload is paused so our own
+        # writes don't trigger a reload mid-surgery.
+        try:
+            prev_autoreload = renpy.get_autoreload()
+        except Exception:
+            prev_autoreload = False
+        try:
+            renpy.set_autoreload(False)
+        except Exception:
+            pass
+
+        orig_replace_node = renpy.execution.Context.replace_node
+
+        def patched_replace_node(self, old, new):
+            def replace_one(name):
+                try:
+                    if renpy.game.script.lookup(name) is old:
+                        return new.name
+                except Exception:
+                    pass
+                return name
+            self.current = replace_one(self.current)
+            self.return_stack = [replace_one(i) for i in self.return_stack]
+
+        renpy.execution.Context.replace_node = patched_replace_node
+        return orig_replace_node, prev_autoreload
+
+    def wysiwyg_end_ast_surgery(state):
+        orig_replace_node, prev_autoreload = state
+        renpy.execution.Context.replace_node = orig_replace_node
+        if prev_autoreload:
+            try:
+                renpy.set_autoreload(prev_autoreload)
+            except Exception:
+                pass
+
     def wysiwyg_remove_logical_line(filename, line):
         # renpy.scriptedit.remove_line tracks a commented line only up to the
         # '#': it removes the code plus the '#' itself and leaves the comment
@@ -2569,7 +2618,6 @@ init -2 python:
             raise Exception("source line " + filename + ":" + str(line) + " is not editable")
 
         physical = wysiwyg_line_physical_span(header)
-        header_indent = len(header.text) - len(header.text.lstrip())
 
         # A trailing comment on the statement is the user's - carry it over
         # onto the rewritten line.
@@ -2584,32 +2632,7 @@ init -2 python:
         # is responsible for the pre-save backup.
         block_lines = [span for _entry, span in wysiwyg_collect_atl_block(filename, line)]
 
-        try:
-            prev_autoreload = renpy.get_autoreload()
-        except Exception:
-            prev_autoreload = False
-        try:
-            renpy.set_autoreload(False)
-        except Exception:
-            pass
-
-        # replace_node is patched only for the duration of the AST surgery:
-        # a context's return stack can hold names that are no longer in the
-        # namemap, and the stock lookup raises instead of skipping them.
-        orig_replace_node = renpy.execution.Context.replace_node
-
-        def patched_replace_node(self, old, new):
-            def replace_one(name):
-                try:
-                    if renpy.game.script.lookup(name) is old:
-                        return new.name
-                except Exception:
-                    pass
-                return name
-            self.current = replace_one(self.current)
-            self.return_stack = [replace_one(i) for i in self.return_stack]
-
-        renpy.execution.Context.replace_node = patched_replace_node
+        surgery = wysiwyg_begin_ast_surgery()
         block_physical = 0
         try:
             renpy.scriptedit.add_to_ast_before(code, filename, line)
@@ -2629,18 +2652,13 @@ init -2 python:
 
             # Echo check: the tracked line must now be exactly what was
             # written. A mismatch means the surgery landed in the wrong
-            # place; failing loudly here lets the save loop restore the
+            # place; failing loudly here makes the save loop restore the
             # pre-save backup instead of leaving silent damage.
             written_entry = renpy.scriptedit.lines.get((filename, line))
             if written_entry is None or written_entry.text.strip() != code.strip():
                 raise Exception("post-write line check failed at " + filename + ":" + str(line))
         finally:
-            renpy.execution.Context.replace_node = orig_replace_node
-            if prev_autoreload:
-                try:
-                    renpy.set_autoreload(prev_autoreload)
-                except Exception:
-                    pass
+            wysiwyg_end_ast_surgery(surgery)
 
         return 1 - physical - block_physical
 
@@ -2731,10 +2749,13 @@ init -2 python:
                 wysiwyg_log_debug("[RESTORE] tag={0} image={1} orig_x={2} orig_y={3} rotate={4} xzoom={5} yzoom={6}".format(
                     tag, image_name, restore_char.get("original_x"), restore_char.get("original_y"), restore_char.get("rotate"), restore_char.get("xzoom"), restore_char.get("yzoom")
                 ))
-                renpy.show(image_name, at_list=at_list, layer="master", zorder=int(char.get("zorder") or 0))
+                # Explicit tag: an `as`-aliased sprite (image "hero sad",
+                # tag "h2") must come back under its alias, not replace the
+                # base "hero" instance.
+                renpy.show(image_name, at_list=at_list, layer="master", zorder=int(char.get("zorder") or 0), tag=tag)
             except Exception:
                 try:
-                    renpy.show(image_name, layer="master")
+                    renpy.show(image_name, layer="master", tag=tag)
                 except Exception:
                     pass
 
@@ -2811,6 +2832,92 @@ init -2 python:
     # Rounds the edited values, rewrites each character's source line via
     # renpy.scriptedit (AST + file in one step), then refreshes original_*
     # so closing the editor keeps the just-saved state on screen.
+    # Every numeric property the editor edits and saves, with its default
+    # and the dirty-check tolerance. wysiwyg_char_dirty and
+    # wysiwyg_write_originals both iterate THIS table, so an editable
+    # property is added in one place. Keeping four hand-written lists in
+    # sync already failed once: original_zorder was missing from the
+    # post-save refresh, which left zorder edits permanently dirty.
+    WYSIWYG_NUMERIC_PROPS = (
+        ("rotate", 0.0, 0.05),
+        ("xzoom", 1.0, 0.0005),
+        ("yzoom", 1.0, 0.0005),
+        ("alpha", 1.0, 0.0005),
+        ("filter_blur", 0.0, 0.0005),
+        ("filter_brightness", 0.0, 0.0005),
+        ("filter_contrast", 1.0, 0.0005),
+        ("filter_saturation", 1.0, 0.0005),
+        ("filter_hue", 0.0, 0.0005),
+        ("filter_invert", 0.0, 0.0005),
+        ("motion_fx_strength", 1.0, 0.0005),
+    )
+
+    def wysiwyg_write_originals(char):
+        # Snapshots the current state as the new baseline (after a save, or
+        # when creating a character), so the dirty check compares against it.
+        char["original_x"] = wysiwyg_float(char.get("x", 0.0), 0.0)
+        char["original_y"] = wysiwyg_float(char.get("y", 0.0), 0.0)
+        char["original_anchor_x"] = wysiwyg_float(char.get("anchor_x", char.get("x", 0.0)), 0.0)
+        char["original_anchor_y"] = wysiwyg_float(char.get("anchor_y", char.get("y", 0.0)), 0.0)
+        for key, default, _tolerance in WYSIWYG_NUMERIC_PROPS:
+            char["original_" + key] = wysiwyg_float(char.get(key, default), default)
+        char["original_filter_sepia"] = bool(char.get("filter_sepia", False))
+        char["original_motion_fx"] = str(char.get("motion_fx", "none") or "none").strip().lower()
+        char["original_zorder"] = char.get("zorder")
+        char["original_parsed_center_x"] = char.get("parsed_center_x", char.get("x", 0.0) + wysiwyg_float(char.get("w", 0.0), 0.0) / 2.0)
+        char["original_parsed_center_y"] = char.get("parsed_center_y", char.get("y", 0.0) + wysiwyg_float(char.get("h", 0.0), 0.0) / 2.0)
+
+    def wysiwyg_shift_source_lines(edited_file, from_line, delta, inclusive=False, skip_char=None, journal=None):
+        # An edit changed the physical line count of `edited_file`: shift
+        # every remembered location at/below it - character records, the
+        # background pointer, and the session execution log (a stale log
+        # line would otherwise match the wrong statement with full
+        # confidence after a multi-line edit). When `journal` is given,
+        # every mutation is recorded so wysiwyg_unshift_source_lines can
+        # undo it exactly if the save later fails verification.
+        def hit(line):
+            line = int(line or 0)
+            return line >= from_line if inclusive else line > from_line
+
+        for other in store.wysiwyg_chars:
+            if other is skip_char:
+                continue
+            if str(other.get("source_file", "")).replace("\\", "/") != edited_file:
+                continue
+            if hit(other.get("source_line", 0)):
+                old = int(other["source_line"])
+                if journal is not None:
+                    journal.append(("char", other, old))
+                other["source_line"] = old + delta
+
+        bg_source = store.wysiwyg_bg_source
+        if bg_source and str(bg_source.get("file", "")).replace("\\", "/") == edited_file:
+            if hit(bg_source.get("line", 0)):
+                old = int(bg_source["line"])
+                if journal is not None:
+                    journal.append(("bg", bg_source, old))
+                bg_source["line"] = old + delta
+
+        log = WYSIWYG_RUNTIME.exec_log
+        for index, entry in enumerate(log):
+            filename, line = entry
+            if filename == edited_file and hit(line):
+                if journal is not None:
+                    journal.append(("log", index, entry))
+                log[index] = (filename, int(line) + delta)
+
+    def wysiwyg_unshift_source_lines(journal):
+        for kind, ref, old in reversed(journal):
+            try:
+                if kind == "char":
+                    ref["source_line"] = old
+                elif kind == "bg":
+                    ref["line"] = old
+                elif kind == "log":
+                    WYSIWYG_RUNTIME.exec_log[ref] = old
+            except Exception:
+                pass
+
     def wysiwyg_char_dirty(char):
         # True when the user actually changed something versus the imported
         # (or last saved) state. Clean statements are never rewritten: a
@@ -2827,20 +2934,7 @@ init -2 python:
         if ocy is None or int(round(wysiwyg_float(ocy, cy))) != cy:
             return True
 
-        numeric = (
-            ("rotate", 0.0, 0.05),
-            ("xzoom", 1.0, 0.0005),
-            ("yzoom", 1.0, 0.0005),
-            ("alpha", 1.0, 0.0005),
-            ("filter_blur", 0.0, 0.0005),
-            ("filter_brightness", 0.0, 0.0005),
-            ("filter_contrast", 1.0, 0.0005),
-            ("filter_saturation", 1.0, 0.0005),
-            ("filter_hue", 0.0, 0.0005),
-            ("filter_invert", 0.0, 0.0005),
-            ("motion_fx_strength", 1.0, 0.0005),
-        )
-        for key, default, tolerance in numeric:
+        for key, default, tolerance in WYSIWYG_NUMERIC_PROPS:
             current = wysiwyg_float(char.get(key, default), default)
             original = wysiwyg_float(char.get("original_" + key, default), default)
             if abs(current - original) > tolerance:
@@ -2893,27 +2987,84 @@ init -2 python:
         "# editor installed) so those statements keep working.\n"
     )
 
+    # Keep in sync with the `transform wysiwyg_*_motion` section further
+    # down. Embedded here (instead of regex-extracted from the editor's own
+    # source at save time) so the companion file can be written even when
+    # the editor runs from a .rpyc or the file was renamed.
+    WYSIWYG_MOTION_FX_SOURCE = """\
+transform wysiwyg_float_motion(strength=1.0):
+    yoffset 0
+    ease 0.75 yoffset int(round(-18 * strength))
+    ease 0.75 yoffset 0
+    repeat
+
+transform wysiwyg_shake_motion(strength=1.0):
+    xoffset 0
+    yoffset 0
+    pause 0.04
+    xoffset int(round(-8 * strength))
+    yoffset int(round(4 * strength))
+    pause 0.04
+    xoffset int(round(7 * strength))
+    yoffset int(round(-5 * strength))
+    pause 0.04
+    xoffset int(round(-6 * strength))
+    yoffset int(round(3 * strength))
+    pause 0.04
+    xoffset int(round(5 * strength))
+    yoffset int(round(-4 * strength))
+    pause 0.04
+    repeat
+
+transform wysiwyg_bounce_motion(strength=1.0):
+    yoffset 0
+    ease 0.18 yoffset int(round(-24 * strength))
+    ease 0.22 yoffset 0
+    pause 0.08
+    repeat
+
+transform wysiwyg_sink_motion(strength=1.0):
+    yoffset 0
+    ease 0.75 yoffset int(round(18 * strength))
+    ease 0.75 yoffset 0
+    repeat
+
+transform wysiwyg_breathe_motion(strength=1.0):
+    yoffset 0
+    zoom 1.0
+    ease 0.75 yoffset int(round(-5 * strength)) zoom (1.0 + (0.025 * strength))
+    ease 0.75 yoffset 0 zoom 1.0
+    repeat
+
+transform wysiwyg_sway_motion(strength=1.0):
+    xoffset 0
+    rotate 0
+    ease 0.75 xoffset int(round(6 * strength)) rotate (3 * strength)
+    ease 0.75 xoffset int(round(-6 * strength)) rotate (-3 * strength)
+    ease 0.75 xoffset 0 rotate 0
+    repeat
+
+transform wysiwyg_blink_motion(strength=1.0):
+    alpha 1.0
+    pause 1.0
+    alpha 0.0
+    pause 0.12
+    alpha 1.0
+    pause 0.2
+    repeat
+"""
+
     def wysiwyg_ensure_motion_fx_file():
         # Saved lines can reference wysiwyg_*_motion transforms. Those must
         # not depend on the editor file staying installed, so the transforms
-        # are materialized once into a small standalone .rpy.
+        # are materialized once into a small standalone .rpy. Raises on
+        # failure - the save loop reports it instead of letting a "verified"
+        # save quietly depend on the editor staying installed.
         path = os.path.join(wysiwyg_game_dir(), WYSIWYG_MOTION_FX_FILE)
         if os.path.exists(path):
             return
-        source = None
-        editor_path = os.path.join(wysiwyg_game_dir(), "wysiwyg_editor.rpy")
-        try:
-            with io.open(editor_path, "r", encoding="utf-8") as handle:
-                editor_source = handle.read()
-            match = re.search(r"(^transform wysiwyg_float_motion.*?)(?=^# =)", editor_source, re.S | re.M)
-            if match:
-                source = match.group(1).rstrip() + "\n"
-        except Exception:
-            source = None
-        if not source:
-            return
         with io.open(path, "w", encoding="utf-8") as handle:
-            handle.write(WYSIWYG_MOTION_FX_HEADER + "\n" + source)
+            handle.write(WYSIWYG_MOTION_FX_HEADER + "\n" + WYSIWYG_MOTION_FX_SOURCE)
 
     def wysiwyg_save_changes():
         changed = 0
@@ -2947,12 +3098,16 @@ init -2 python:
 
         needs_motion_file = False
         batch_backups = {}
+        shift_journals = {}
+        pending_written = set()
+        failed_now = set()
         # Insert target for newly added sprites, fetched ONCE per save:
         # add_to_ast_before repoints ctx.current at the inserted node, so
         # asking for the current position again after the first insert would
         # reverse the order of subsequently inserted lines.
         pending_target = None
         for char in store.wysiwyg_chars:
+            touched_file = None
             try:
                 if char.get("locked"):
                     continue
@@ -2967,7 +3122,7 @@ init -2 python:
                             continue
                         pending_target = (str(target_file).replace("\\", "/"), int(target_line))
                     target_file, target_line = pending_target
-                    if target_file in WYSIWYG_RUNTIME.failed_files:
+                    if target_file in WYSIWYG_RUNTIME.failed_files or target_file in failed_now:
                         errors.append(char.get("tag", "?") + ": saving to this file is disabled after a failed write - restart the game")
                         continue
                     target_path = wysiwyg_source_path(target_file)
@@ -2977,6 +3132,7 @@ init -2 python:
                     line_to_write = wysiwyg_position_line_for_char(char)
                     if target_file not in batch_backups:
                         batch_backups[target_file] = wysiwyg_backup_source(target_file)
+                    touched_file = target_file
                     wysiwyg_log_debug("[INSERT] tag={0} target={1}:{2} code={3}".format(
                         char.get("tag"), target_file, target_line, line_to_write
                     ))
@@ -2985,20 +3141,13 @@ init -2 python:
                     char["source_line"] = target_line
                     char["pending_insert"] = False
                     char["source_confidence"] = "linelog"
+                    pending_written.add(id(char))
                     # The next added sprite goes right below this one, still
                     # above the statement the game is paused on.
                     pending_target = (target_file, target_line + 1)
-                    for other in store.wysiwyg_chars:
-                        if other is char:
-                            continue
-                        if str(other.get("source_file", "")).replace("\\", "/") != target_file:
-                            continue
-                        if int(other.get("source_line", 0) or 0) >= target_line:
-                            other["source_line"] = int(other["source_line"]) + delta
-                    bg_source = store.wysiwyg_bg_source
-                    if bg_source and str(bg_source.get("file", "")).replace("\\", "/") == target_file:
-                        if int(bg_source.get("line", 0) or 0) >= target_line:
-                            bg_source["line"] = int(bg_source["line"]) + delta
+                    wysiwyg_shift_source_lines(target_file, target_line, delta, inclusive=True,
+                                               skip_char=char,
+                                               journal=shift_journals.setdefault(target_file, []))
                     if "wysiwyg_" in line_to_write and "_motion(" in line_to_write:
                         needs_motion_file = True
                     changed += 1
@@ -3007,15 +3156,19 @@ init -2 python:
                 if not wysiwyg_char_dirty(char):
                     skipped_clean += 1
                     continue
+                edited_file = str(char["source_file"]).replace("\\", "/")
+                if edited_file in failed_now:
+                    errors.append(char.get("tag", "?") + ": saving to this file is disabled after a failed write - restart the game")
+                    continue
                 problem = wysiwyg_validate_save_target(char)
                 if problem:
                     errors.append(char.get("tag", "?") + ": " + problem)
                     continue
                 line_to_write = wysiwyg_position_line_for_char(char)
-                edited_file = str(char["source_file"]).replace("\\", "/")
                 edited_line = int(char["source_line"])
                 if edited_file not in batch_backups:
                     batch_backups[edited_file] = wysiwyg_backup_source(edited_file)
+                touched_file = edited_file
                 wysiwyg_log_debug("[SAVE] tag={0} source={1}:{2} code={3}".format(
                     char.get("tag"), edited_file, edited_line, line_to_write
                 ))
@@ -3026,70 +3179,67 @@ init -2 python:
                 if delta:
                     # The edit changed the physical line count: shift every
                     # remembered location below it in the same file.
-                    for other in store.wysiwyg_chars:
-                        if other is char:
-                            continue
-                        if str(other.get("source_file", "")).replace("\\", "/") != edited_file:
-                            continue
-                        if int(other.get("source_line", 0) or 0) > edited_line:
-                            other["source_line"] = int(other["source_line"]) + delta
-                    bg_source = store.wysiwyg_bg_source
-                    if bg_source and str(bg_source.get("file", "")).replace("\\", "/") == edited_file:
-                        if int(bg_source.get("line", 0) or 0) > edited_line:
-                            bg_source["line"] = int(bg_source["line"]) + delta
+                    wysiwyg_shift_source_lines(edited_file, edited_line, delta, inclusive=False,
+                                               skip_char=char,
+                                               journal=shift_journals.setdefault(edited_file, []))
                 changed += 1
                 written.append(char)
             except Exception as exc:
                 errors.append(char.get("tag", "?") + ": " + str(exc))
+                if touched_file:
+                    # The surgery may have modified the file before failing
+                    # (an echo-check raise means it definitely did). Treat it
+                    # like a verification failure so the restore path below
+                    # puts the backup back instead of leaving the damage.
+                    failed_now.add(touched_file)
 
         if needs_motion_file:
             try:
                 wysiwyg_ensure_motion_fx_file()
             except Exception as exc:
-                errors.append("motion fx file: " + str(exc))
+                errors.append("motion fx file: " + str(exc) + " - keep wysiwyg_editor.rpy installed or the saved Motion FX lines will not run without it")
 
         # Post-save verification: every touched file must still parse with the
         # engine parser. A failure restores the pre-save backup on the spot
         # and disables further saves to that file until the game restarts.
-        failed_now = set()
-        for edited_file, backup in batch_backups.items():
-            problem = wysiwyg_verify_file_parses(edited_file)
-            if not problem:
+        for edited_file in batch_backups:
+            if edited_file in failed_now:
                 continue
-            failed_now.add(edited_file)
-            WYSIWYG_RUNTIME.failed_files.add(edited_file)
-            if wysiwyg_restore_backup(edited_file, backup):
-                errors.append(edited_file + ": save verification FAILED (" + problem + ") - file restored from backup; restart the game before saving it again")
-            else:
-                errors.append(edited_file + ": save verification FAILED (" + problem + ") - AUTO-RESTORE FAILED, restore manually from " + str(backup))
-            wysiwyg_log_debug("[VERIFY-FAIL] file={0} problem={1} backup={2}".format(edited_file, problem, backup))
+            try:
+                problem = wysiwyg_verify_file_parses(edited_file)
+            except Exception as exc:
+                problem = "verifier crashed: " + str(exc)
+            if problem:
+                failed_now.add(edited_file)
+                errors.append(edited_file + ": save verification FAILED (" + problem + ")")
 
-        if failed_now:
-            reverted = [c for c in written if str(c.get("source_file", "")).replace("\\", "/") in failed_now]
-            written = [c for c in written if str(c.get("source_file", "")).replace("\\", "/") not in failed_now]
-            changed -= len(reverted)
+        for failed_file in failed_now:
+            WYSIWYG_RUNTIME.failed_files.add(failed_file)
+            backup = batch_backups.get(failed_file)
+            if wysiwyg_restore_backup(failed_file, backup):
+                errors.append(failed_file + ": file restored from backup; restart the game before saving it again")
+            else:
+                errors.append(failed_file + ": AUTO-RESTORE FAILED, restore manually from " + str(backup))
+            wysiwyg_log_debug("[VERIFY-FAIL] file={0} backup={1}".format(failed_file, backup))
+            # Undo this file's bookkeeping: line shifts, and the "already
+            # inserted" state of added sprites whose line just got reverted
+            # (otherwise the close path would re-show a sprite whose show
+            # line no longer exists on disk).
+            wysiwyg_unshift_source_lines(shift_journals.pop(failed_file, []))
+            for reverted_char in list(written):
+                if str(reverted_char.get("source_file", "")).replace("\\", "/") != failed_file:
+                    continue
+                written.remove(reverted_char)
+                changed -= 1
+                if id(reverted_char) in pending_written:
+                    reverted_char["pending_insert"] = True
+                    reverted_char["source_file"] = ""
+                    reverted_char["source_line"] = 0
+                    reverted_char["source_confidence"] = "new"
 
         if changed:
             for char in written:
-                char["original_x"] = wysiwyg_float(char.get("x", 0.0), 0.0)
-                char["original_y"] = wysiwyg_float(char.get("y", 0.0), 0.0)
-                char["original_anchor_x"] = wysiwyg_float(char.get("anchor_x", char.get("x", 0.0)), 0.0)
-                char["original_anchor_y"] = wysiwyg_float(char.get("anchor_y", char.get("y", 0.0)), 0.0)
-                char["original_rotate"] = wysiwyg_float(char.get("rotate", 0.0), 0.0)
-                char["original_xzoom"] = wysiwyg_float(char.get("xzoom", 1.0), 1.0)
-                char["original_yzoom"] = wysiwyg_float(char.get("yzoom", 1.0), 1.0)
-                char["original_alpha"] = wysiwyg_float(char.get("alpha", 1.0), 1.0)
-                char["original_filter_blur"] = wysiwyg_float(char.get("filter_blur", 0.0), 0.0)
-                char["original_filter_brightness"] = wysiwyg_float(char.get("filter_brightness", 0.0), 0.0)
-                char["original_filter_contrast"] = wysiwyg_float(char.get("filter_contrast", 1.0), 1.0)
-                char["original_filter_saturation"] = wysiwyg_float(char.get("filter_saturation", 1.0), 1.0)
-                char["original_filter_hue"] = wysiwyg_float(char.get("filter_hue", 0.0), 0.0)
-                char["original_filter_invert"] = wysiwyg_float(char.get("filter_invert", 0.0), 0.0)
-                char["original_filter_sepia"] = bool(char.get("filter_sepia", False))
-                char["original_motion_fx"] = str(char.get("motion_fx", "none") or "none").strip().lower()
-                char["original_motion_fx_strength"] = wysiwyg_clamp(wysiwyg_float(char.get("motion_fx_strength", 1.0), 1.0), 0.0, 2.0)
-                char["original_parsed_center_x"] = char.get("parsed_center_x", char.get("x", 0.0) + wysiwyg_float(char.get("w", 0.0), 0.0) / 2.0)
-                char["original_parsed_center_y"] = char.get("parsed_center_y", char.get("y", 0.0) + wysiwyg_float(char.get("h", 0.0), 0.0) / 2.0)
+                wysiwyg_write_originals(char)
             store.wysiwyg_saved_runtime = True
             # The import-time snapshot now describes a PRE-save scene. If it
             # were kept, closing with any unsaved tweak after this save would

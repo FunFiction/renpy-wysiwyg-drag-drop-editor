@@ -28,6 +28,15 @@ init python:
             store.wysiwyg_saved_runtime = False
             wysiwyg_save_changes()
             out.append("SAVE: " + str(store.wysiwyg_status))
+            # second save of the SAME line in one session: the trailing
+            # comment now lives on an editor-written (synthetic) line and
+            # must still be carried over
+            for c in store.wysiwyg_chars:
+                if c.get("tag") == "eileen":
+                    c["x"] = wysiwyg_float(c.get("x", 0), 0) + 5
+            store.wysiwyg_saved_runtime = False
+            wysiwyg_save_changes()
+            out.append("SAVE-2: " + str(store.wysiwyg_status))
             wysiwyg_toggle()
         except Exception:
             out.append("EXC:\n" + traceback.format_exc())

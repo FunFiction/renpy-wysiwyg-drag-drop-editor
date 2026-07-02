@@ -4,6 +4,7 @@ RUNS 2
 MATCH IMPORT: Imported 4 character\(s\)
 MATCH CLEAN-SAVE: No changes to save
 MATCH SAVE: Saved 4 changed line\(s\), verified
+MATCH SAVE-2: Saved 1 changed line\(s\), verified
 NOMATCH EXC
 # eileen: single line now, comment and dissolve preserved
 FILEMATCH script.rpy show eileen happy at Transform\(xpos=\d+, ypos=\d+, xanchor=0\.5.*# keep me

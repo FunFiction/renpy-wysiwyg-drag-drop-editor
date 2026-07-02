@@ -54,9 +54,12 @@ init python:
             for c in store.wysiwyg_chars:
                 if not c.get("locked"):
                     c["x"] = wysiwyg_float(c.get("x", 0), 0) + 9
+            wysiwyg_adjust_zorder("b1", 1)
             store.wysiwyg_saved_runtime = False
             wysiwyg_save_changes()
             out.append("SAVE: " + str(store.wysiwyg_status))
+            wysiwyg_save_changes()
+            out.append("RESAVE: " + str(store.wysiwyg_status))
             wysiwyg_toggle()
         except Exception:
             out.append("EXC:\n" + traceback.format_exc())

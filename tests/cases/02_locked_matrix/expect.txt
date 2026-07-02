@@ -18,6 +18,9 @@ MATCH TAG iga: locked='inherits a transform from an earlier show'
 MATCH TAG fred: locked=None
 MATCH TAG pysprite: locked='shown from code \(no source line\)'
 MATCH SAVE: Saved 6 changed line\(s\), verified
+# a second save right after must be clean (zorder baseline refreshed too)
+MATCH RESAVE: No changes to save
+FILEMATCH script.rpy show b1 at Transform\(.*\) zorder 1
 # locked lines stay byte-identical
 FILEMATCH script.rpy show a1 at wobble$
 FILEMATCH script.rpy show a7 at Transform\(xpos=500, ypos=100, zoom=1\.5\)$
