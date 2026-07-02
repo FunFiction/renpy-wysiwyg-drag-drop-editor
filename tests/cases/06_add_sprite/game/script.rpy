@@ -43,6 +43,12 @@ init python:
                     c["x"] = 900.0
             wysiwyg_save_changes()
             out.append("SAVE: " + str(store.wysiwyg_status))
+            # tl/ guard: a position inside game/tl/ must refuse the insert
+            orig_pos = wysiwyg_get_current_position
+            store.wysiwyg_get_current_position = lambda: ("game/tl/polish/fake.rpy", 5)
+            wysiwyg_add_character("bigguy")
+            out.append("TL-GUARD: " + str(store.wysiwyg_status))
+            store.wysiwyg_get_current_position = orig_pos
             wysiwyg_toggle()
         except Exception:
             out.append("EXC:\n" + traceback.format_exc())

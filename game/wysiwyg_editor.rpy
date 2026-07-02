@@ -1952,23 +1952,46 @@ init -2 python:
                 return "bad attribute '" + part + "'"
         return None
 
+    def wysiwyg_image_name_for_file(fn):
+        # Mirrors the engine's auto-image naming (00images.rpy): lowercased
+        # basename without the extension and without an @oversampled suffix.
+        base = os.path.splitext(os.path.basename(str(fn)))[0]
+        base = base.lower()
+        base = base.partition("@")[0]
+        return base
+
     def wysiwyg_list_image_files():
         rows = []
         try:
             files = renpy.list_files()
         except Exception:
             files = []
+        try:
+            extensions = tuple(config.image_extensions)
+        except Exception:
+            extensions = WYSIWYG_IMAGE_EXTS
         for fn in sorted(files):
             low = str(fn).replace("\\", "/").lower()
             if not low.startswith("images/"):
                 continue
-            if not low.endswith(WYSIWYG_IMAGE_EXTS):
+            if not low.endswith(extensions):
                 continue
-            name = os.path.splitext(os.path.basename(str(fn)))[0]
+            name = wysiwyg_image_name_for_file(fn)
+            problem = wysiwyg_image_name_problem(name)
+            if not problem:
+                # The engine registers auto-images at startup; a name it
+                # cannot resolve would save a show line that renders the
+                # "Image not found" error text instead of the sprite.
+                try:
+                    resolvable = renpy.has_image(name, exact=True)
+                except Exception:
+                    resolvable = False
+                if not resolvable:
+                    problem = "image not defined - restart the game if the file is new"
             rows.append({
                 "file": str(fn),
                 "name": name,
-                "problem": wysiwyg_image_name_problem(name),
+                "problem": problem,
             })
         return rows
 
@@ -1989,6 +2012,13 @@ init -2 python:
         if problem:
             wysiwyg_set_status("Cannot add: " + problem)
             return
+        try:
+            resolvable = renpy.has_image(image_name, exact=True)
+        except Exception:
+            resolvable = False
+        if not resolvable:
+            wysiwyg_set_status("Cannot add: image '" + image_name + "' is not defined - restart the game if the file is new.")
+            return
         tag = image_name.split()[0]
         if wysiwyg_find_char(tag):
             wysiwyg_set_status("Tag '" + tag + "' is already tracked - edit it in On Scene.")
@@ -2003,6 +2033,13 @@ init -2 python:
         filename, line = wysiwyg_get_current_position()
         if not filename or not line:
             wysiwyg_set_status("Cannot add: current script position is unknown.")
+            return
+        if str(filename).replace("\\", "/").startswith("game/tl/"):
+            # In a non-default language ctx.current sits inside game/tl/ -
+            # inserting there would put the show inside a translate block:
+            # it runs only in that language and is wiped when translations
+            # regenerate.
+            wysiwyg_set_status("Cannot add while playing a translation - switch to the base language first.")
             return
         path = wysiwyg_source_path(filename)
         if not path or not os.path.exists(path):
@@ -3122,6 +3159,9 @@ transform wysiwyg_blink_motion(strength=1.0):
                             continue
                         pending_target = (str(target_file).replace("\\", "/"), int(target_line))
                     target_file, target_line = pending_target
+                    if target_file.startswith("game/tl/"):
+                        errors.append(char.get("tag", "?") + ": cannot insert while playing a translation - switch to the base language")
+                        continue
                     if target_file in WYSIWYG_RUNTIME.failed_files or target_file in failed_now:
                         errors.append(char.get("tag", "?") + ": saving to this file is disabled after a failed write - restart the game")
                         continue
