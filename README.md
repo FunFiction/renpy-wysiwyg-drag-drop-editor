@@ -1,8 +1,8 @@
 # Ren'Py Drag-and-Drop WYSIWYG Editor (v0.2.0)
 
-A powerful, single-file overlay tool for Ren'Py games that allows creators to arrange, rotate, scale, animate, and filter sprites visually in real-time, writing the code directly back to the `.rpy` source files.
+A single-file overlay tool for Ren'Py games. You arrange, rotate, scale, animate and filter sprites visually while the game runs, and the editor writes the result straight back into your `.rpy` source files.
 
-No more guess-and-test positioning or editing coordinates in your text editor. Just hit **F5**, drag your characters to the perfect spots, tweak their properties, and save.
+Instead of editing coordinates in a text editor and relaunching the game to check them, press **F5**, drag the characters where you want them, and save.
 
 ---
 
@@ -10,7 +10,7 @@ No more guess-and-test positioning or editing coordinates in your text editor. J
 
 ### 1. Initial Launch Overlay (F5)
 ![Initial Launch](assets/editor_menu_01.jpg)
-*The clean editor overlay immediately after launching it with the F5 key.*
+*The editor overlay right after opening it with F5.*
 
 ### 2. Main Interface (After Scene Import)
 ![Main Interface](assets/editor_menu_02.jpg)
@@ -38,15 +38,15 @@ No more guess-and-test positioning or editing coordinates in your text editor. J
 
 - **Live Drag-and-Drop Layout**: Click and drag any sprite on the screen to reposition it instantly.
 - **Direct Source Code Rewriting**: When you click **Save Changes**, the editor locates the exact `show` or `scene` statements that rendered the active sprites (using Ren'Py's execution line log `config.line_log`) and rewrites the parameters in-place inside your `.rpy` files using `renpy.scriptedit`.
-- **Automatic Backups + Write Verification**: Before every save, each touched file is backed up into `game/wysiwyg_backups/` (rotated, 10 newest per file plus the session baseline). After every save the whole file is re-parsed with the engine parser — if anything is wrong, the backup is restored automatically on the spot.
+- **Automatic Backups + Write Verification**: Before every save, each touched file is backed up into `game/wysiwyg_backups/` (rotated, 10 newest per file plus the session baseline). After every save the whole file is re-parsed with the engine parser. If anything is wrong, the backup comes back automatically on the spot.
 - **Only Changed Lines Are Written**: Characters you did not modify are never rewritten, so untouched statements keep their original transitions, at-lists and formatting.
-- **Animated Characters Are Locked, Not Broken**: A character shown with an animated ATL block or a custom transform is imported as *locked* — it stays live and animated on screen, cannot be dragged, and its source line is never rewritten. Static placements (`at left/center/right`, plain `Transform(...)`, static ATL blocks) stay fully editable.
+- **Animated Characters Are Locked, Not Broken**: A character shown with an animated ATL block or a custom transform is imported as *locked*: it stays live and animated on screen, cannot be dragged, and its source line is never rewritten. Static placements (`at left/center/right`, plain `Transform(...)`, static ATL blocks) stay fully editable.
 - **Motion FX are self-contained**: the first save that uses a Motion FX also writes `game/wysiwyg_motion_fx.rpy` with standalone transform definitions, so saved lines keep working even if you remove the editor before release.
-- **Add sprites from `game/images/`**: the "+ Add" button opens a file browser limited to the images folder (the one Ren'Py auto-defines images from — and the only folder the browser can see). Pick a file, drag the sprite into place, and Save Changes inserts a proper `show` line before the statement the game is paused on. Close without saving and the sprite vanishes without a trace.
-- **Bypasses Default Anchors**: Grabs live bounds via `renpy.get_image_bounds`. The parsed source line is only trusted if it matches the live render within 2 pixels, making the editor work in any game regardless of its custom anchors or menu branches.
+- **Add sprites from `game/images/`**: the "+ Add" button opens a file browser limited to the images folder, the one Ren'Py auto-defines images from and the only one the browser can see. Pick a file, drag the sprite into place, and Save Changes inserts a proper `show` line before the statement the game is paused on. Close without saving and the sprite vanishes without a trace.
+- **Bypasses Default Anchors**: Grabs live bounds via `renpy.get_image_bounds`. The parsed source line is only trusted if it matches the live render within 2 pixels, so the editor also works in games with custom anchors or menu branching.
 - **Center-Based Anchoring**: Saves lines in the format `show TAG at Transform(xpos=CX, ypos=CY, xanchor=0.5, yanchor=0.5, ...)`. Center anchors are invariant under rotation and scaling, and explicit anchors prevent issues with default game configurations.
 - **Rotated Bounding Box Match**: The drag container matches the renderer's exact rotated bounding box (incorporating `rotate_pad=True` calculations and integer clipping) to avoid 1px shifting bugs when saving.
-- **Virtual Resolution Scaling**: Designed at 1080p, the editor UI automatically scales using `config.screen_height / 1080.0`, keeping it proportional at any resolution (e.g. 720p or 4K).
+- **Virtual Resolution Scaling**: The UI is designed at 1080p and scales by `config.screen_height / 1080.0`, so the panel stays proportional at 720p or 4K.
 - **Core Transform Controls**:
   - Horizontal/Vertical flipping (`xzoom`/`yzoom`).
   - Linked/Unlinked scale locking.
@@ -108,8 +108,8 @@ No more guess-and-test positioning or editing coordinates in your text editor. J
 ## Installation
 
 1. Copy the file `wysiwyg_editor.rpy` into the `game/` directory of your Ren'Py project.
-2. Launch your game.
-3. The editor is now integrated and ready to use!
+2. Launch the game.
+3. Press **F5** during play to open the editor.
 
 ---
 
@@ -136,7 +136,7 @@ No more guess-and-test positioning or editing coordinates in your text editor. J
 Ren'Py 8.5.x has a known bug where `scrollbars "vertical"` inside a `viewport` silently breaks child rendering or shows an empty viewport. This editor bypasses the issue entirely by using a separate `vbar` component mapped to `YScrollValue`, combined with `mousewheel True` and `draggable True` on the viewport.
 
 ### File Backups & Write Verification
-Every click of **Save Changes** first copies each file it is about to touch into `game/wysiwyg_backups/<file>.<timestamp>.bak` — so every save has its own restore point, not just the first one of the session.
+Every click of **Save Changes** first copies each file it is about to touch into `game/wysiwyg_backups/<file>.<timestamp>.bak`, so every save has its own restore point, not just the first one of the session.
 
 After writing, the editor immediately re-parses the whole file with Ren'Py's own parser:
 
@@ -151,8 +151,8 @@ To restore an original file manually, replace the modified `.rpy` file with the 
 ### Locked (Read-Only) Characters
 Characters whose `show` statement uses an **animated ATL block** (e.g. `linear`, `ease`, `repeat`), a **custom named transform**, or that were shown **from Python code**, are imported as *locked*:
 
-- they stay live on the master layer — their animation keeps playing while you edit others;
-- they cannot be selected, dragged or reset, and their source line is **never rewritten**;
+- they stay live on the master layer, so their animation keeps playing while you edit others;
+- they cannot be selected, dragged or reset, and their source line is never rewritten;
 - the On Scene list and Show Code panel state the reason (e.g. `uses transform 'wobble'`).
 
 Static placements are not affected: `at left`, `at center`, `at right`, explicit `Transform(...)` calls and ATL blocks containing only static properties (`xpos`, `ypos`, `zoom`, …) remain fully editable.
