@@ -70,15 +70,66 @@ init -2 python:
     import io
     import math
     import struct
+    import time
     import zlib
 
     WYSIWYG_VERSION = "0.2.0"
     WYSIWYG_BLACKLIST = set(["black", "white", "text", "vtext", "side", "icon", "ui", "button"])
     WYSIWYG_ALPHA_CACHE = {}
 
+    class _WysiwygRuntime(object):
+        # Session-only state. Held on a single object that is assigned once at
+        # init and never rebound, so none of it is written into player save
+        # files or participates in rollback (unlike the default screen vars).
+        def __init__(self):
+            self.session_stamp = time.strftime("%Y%m%d-%H%M%S")
+            # path -> first backup made this session (never pruned).
+            self.first_backup = {}
+            # Elided filenames whose post-save verification failed; saving to
+            # them stays disabled until the game restarts.
+            self.failed_files = set()
+            self.master_snapshot = None
+            self.prev_allow_skipping = None
+            # True execution-ordered line log (newest last, duplicates kept).
+            # The engine's own line log deduplicates entries, so its order is
+            # first-execution order — wrong for "which show ran most
+            # recently" in games that loop labels.
+            self.exec_log = []
+            self.exec_log_registered = False
+
+    WYSIWYG_RUNTIME = _WysiwygRuntime()
+
+    def wysiwyg_enabled():
+        # The editor is a development tool: keep it (and its line log) out of
+        # shipped builds, where config.developer resolves to False.
+        return bool(getattr(config, "developer", False))
+
     def wysiwyg_init():
-        config.line_log = True
-        config.clear_lines = False
+        # line_log is what lets Import Scene find the exact executed source
+        # line. It is only enabled for developer builds (see wysiwyg_enabled),
+        # from start/after-load callbacks because config.developer is still
+        # "auto" at init time.
+        def _enable():
+            if wysiwyg_enabled():
+                config.line_log = True
+                config.clear_lines = False
+                if not WYSIWYG_RUNTIME.exec_log_registered:
+                    config.line_log_callbacks.append(wysiwyg_line_log_callback)
+                    WYSIWYG_RUNTIME.exec_log_registered = True
+        config.start_callbacks.append(_enable)
+        config.after_load_callbacks.append(_enable)
+
+    def wysiwyg_line_log_callback(entry):
+        # Fires from LineLogEntry.__init__ on EVERY executed statement,
+        # before the engine deduplicates — this is the true most-recent
+        # execution order the engine log cannot provide.
+        log = WYSIWYG_RUNTIME.exec_log
+        try:
+            log.append((str(entry.filename), int(entry.line)))
+        except Exception:
+            return
+        if len(log) > 4000:
+            del log[:2000]
 
     def wysiwyg_game_dir():
         return getattr(config, "gamedir", renpy.config.gamedir)
@@ -285,17 +336,95 @@ init -2 python:
 
         return 0.0, 0.0
 
+    def wysiwyg_backup_dir():
+        return os.path.join(wysiwyg_game_dir(), "wysiwyg_backups")
+
     def wysiwyg_backup_source(filename):
+        # One backup per touched file per SAVE, not per session: every Save
+        # click gets its own restore point in game/wysiwyg_backups/. Kept to
+        # the 10 newest per file, plus this session's first backup (the
+        # pre-editor baseline), so the folder cannot grow without bound.
         path = wysiwyg_source_path(filename)
         if not path or not os.path.exists(path):
-            return
-        backup = path + ".wysiwyg.bak"
-        if os.path.exists(backup):
-            return
+            return None
+        # The backup tree mirrors the game/ tree, so two different source
+        # files can never share a backup name (game/sub/extra.rpy and
+        # game/sub_extra.rpy stay apart) and rotation never touches another
+        # file's restore points.
+        if filename.startswith("game/"):
+            rel = filename[5:].replace("\\", "/")
+        else:
+            rel = os.path.basename(path)
+        base = os.path.basename(rel)
+        backup_dir = os.path.join(wysiwyg_backup_dir(), os.path.dirname(rel).replace("/", os.sep))
+        if not os.path.isdir(backup_dir):
+            os.makedirs(backup_dir)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = os.path.join(backup_dir, base + "." + stamp + ".bak")
+        counter = 1
+        while os.path.exists(backup):
+            backup = os.path.join(backup_dir, base + "." + stamp + "-" + str(counter) + ".bak")
+            counter += 1
         with io.open(path, "r", encoding="utf-8") as handle:
             data = handle.read()
         with io.open(backup, "w", encoding="utf-8") as handle:
             handle.write(data)
+        if path not in WYSIWYG_RUNTIME.first_backup:
+            WYSIWYG_RUNTIME.first_backup[path] = backup
+        try:
+            keep = WYSIWYG_RUNTIME.first_backup.get(path)
+            mine = sorted([f for f in os.listdir(backup_dir) if f.startswith(base + ".") and f.endswith(".bak")])
+            for old in mine[:-10]:
+                full = os.path.join(backup_dir, old)
+                if full != keep:
+                    os.remove(full)
+        except Exception:
+            pass
+        return backup
+
+    def wysiwyg_restore_backup(filename, backup):
+        # Puts a backup's content back into the live source file.
+        try:
+            path = wysiwyg_source_path(filename)
+            if not path or not backup or not os.path.exists(backup):
+                return False
+            with io.open(backup, "r", encoding="utf-8") as handle:
+                data = handle.read()
+            with renpy.loader.auto_lock:
+                with io.open(path, "w", encoding="utf-8") as handle:
+                    handle.write(data)
+                renpy.loader.add_auto(path, force=True)
+            return True
+        except Exception:
+            return False
+
+    def wysiwyg_verify_file_parses(filename):
+        # Re-parses the whole just-saved file with the engine parser. Any
+        # error means the save damaged it and the pre-save backup must come
+        # back - the damage is caught NOW, not at the next game launch.
+        path = wysiwyg_source_path(filename)
+        if not path or not os.path.exists(path):
+            return "file missing"
+        try:
+            with io.open(path, "r", encoding="utf-8") as handle:
+                data = handle.read()
+        except Exception as exc:
+            return "unreadable: " + str(exc)
+        old_errors = renpy.parser.parse_errors
+        renpy.parser.parse_errors = []
+        try:
+            result = renpy.parser.parse(path, filedata=data)
+            messages = list(renpy.parser.parse_errors)
+        except Exception as exc:
+            result = None
+            messages = [str(exc)]
+        finally:
+            renpy.parser.parse_errors = old_errors
+        if result is None or messages:
+            if messages:
+                return str(messages[0]).strip().splitlines()[0]
+            return "parse failed"
+        return None
 
     # --- AST / source statement helpers -------------------------------------
     # Functions below unpack Ren'Py Show/Scene AST nodes and locate the
@@ -330,6 +459,14 @@ init -2 python:
                 layer = "master"
 
         return name_text, expression, tag, list(at_list or []), layer or "master"
+
+    def wysiwyg_imspec_explicit_tag(imspec):
+        # The raw `as alias` tag, or None when the statement had no as-clause.
+        # wysiwyg_imspec_parts defaults the tag from the image name, which is
+        # right for lookups but must not leak into the rewritten line.
+        if imspec and len(imspec) >= 6:
+            return imspec[2]
+        return None
 
     def wysiwyg_node_image(node):
         name, expression, tag, at_list, layer = wysiwyg_imspec_parts(getattr(node, "imspec", None))
@@ -471,6 +608,8 @@ init -2 python:
 
     def wysiwyg_hide_master_chars():
         for char in store.wysiwyg_chars:
+            if char.get("locked"):
+                continue
             tag = char.get("tag")
             try:
                 renpy.hide(tag, layer="master")
@@ -844,11 +983,20 @@ init -2 python:
             img_str = " ".join(img)
         else:
             img_str = str(img)
-        
-        try:
-            child = renpy.displayable(img_str)
-        except Exception:
-            child = img
+
+        child = None
+        if char.get("expression"):
+            # `show expression ...`: the tag is an alias, not an image name,
+            # so evaluate the original expression for the preview.
+            try:
+                child = renpy.displayable(renpy.python.py_eval(str(char.get("expression"))))
+            except Exception:
+                child = None
+        if child is None:
+            try:
+                child = renpy.displayable(img_str)
+            except Exception:
+                child = Null()
 
         kwargs = wysiwyg_transform_effect_kwargs(char)
         if xpos is not None:
@@ -1401,35 +1549,83 @@ init -2 python:
                 best_node = node
                 best_node_image = node_image
 
-        # Prefer the statement that actually executed most recently.
-        for key in reversed(wysiwyg_executed_lines()):
+        # Prefer the statement that actually executed most recently. The
+        # session exec_log (line_log_callbacks) keeps true execution order;
+        # the engine line log deduplicates (first-execution order), so a hit
+        # found only there is downgraded to "linelog-dedup" and the import
+        # status tells the user to verify. Chars resolved by neither are
+        # "heuristic". Every save re-validates the target line regardless.
+        source_confidence = "heuristic"
+        matched = None
+        for key in reversed(list(WYSIWYG_RUNTIME.exec_log)):
             if key in candidates:
-                best_node, best_node_image = candidates[key]
+                matched = key
+                source_confidence = "linelog"
                 break
+        if matched is None:
+            for key in reversed(wysiwyg_executed_lines()):
+                if key in candidates:
+                    matched = key
+                    source_confidence = "linelog-dedup"
+                    break
+        if matched is not None:
+            best_node, best_node_image = candidates[matched]
 
         if not best_node:
             return None
 
         zorder_val = None
+        zorder_raw = None
         behind = []
+        expression = None
+        as_tag = None
+        at_list_exprs = []
         imspec = getattr(best_node, "imspec", None)
         if imspec:
+            _, expression, _, node_at_list, _ = wysiwyg_imspec_parts(imspec)
+            at_list_exprs = [str(a) for a in (node_at_list or [])]
+            as_tag = wysiwyg_imspec_explicit_tag(imspec)
             if len(imspec) >= 6 and imspec[5] is not None:
                 try:
                     zorder_val = int(str(imspec[5]))
                 except Exception:
+                    # zorder given as an expression (e.g. `zorder z + 1`):
+                    # keep the raw text so the rewritten line preserves it.
                     zorder_val = None
+                    zorder_raw = str(imspec[5])
             if len(imspec) == 7:
                 behind = [str(i) for i in (imspec[6] or [])]
+
+        # A `with transition` on the same line becomes separate With nodes in
+        # the AST; capture the transition so the rewritten line keeps it.
+        with_expr = None
+        for node in getattr(renpy.game.script, "all_stmts", []):
+            if not isinstance(node, renpy.ast.With):
+                continue
+            if getattr(node, "filename", None) != best_node.filename:
+                continue
+            if getattr(node, "linenumber", None) != best_node.linenumber:
+                continue
+            expr_text = str(getattr(node, "expr", "") or "").strip()
+            if expr_text and expr_text != "None":
+                with_expr = expr_text
 
         return {
             "key": tag,
             "tag": tag,
             "image": best_node_image or image_name or tag,
             "runtime_image": best_node_image or image_name or tag,
+            "expression": str(expression) if expression else None,
+            "as_tag": str(as_tag) if as_tag else None,
+            "with_expr": with_expr,
+            "at_list_exprs": at_list_exprs,
+            "has_atl": getattr(best_node, "atl", None) is not None,
+            "source_confidence": source_confidence,
             "source_file": best_node.filename,
             "source_line": best_node.linenumber,
             "zorder": zorder_val,
+            "zorder_raw": zorder_raw,
+            "original_zorder": zorder_val,
             "behind": behind,
             "unsaved": True,
         }
@@ -1537,9 +1733,17 @@ init -2 python:
                     "tag": tag,
                     "image": image_name,
                     "runtime_image": image_name,
+                    "expression": None,
+                    "as_tag": None,
+                    "with_expr": None,
+                    "at_list_exprs": [],
+                    "has_atl": False,
+                    "source_confidence": "none",
                     "source_file": "",
                     "source_line": 0,
                     "zorder": None,
+                    "zorder_raw": None,
+                    "original_zorder": None,
                     "behind": [],
                     "unsaved": True,
                 }
@@ -1656,30 +1860,57 @@ init -2 python:
             wysiwyg_log_debug("[IMPORT] tag={0} img_w={1} img_h={2} x={3} y={4} rotate={5} xzoom={6} yzoom={7}".format(
                 tag, img_w, img_h, data["x"], data["y"], data["rotate"], data["xzoom"], data["yzoom"]
             ))
-            wysiwyg_log_debug("[IMPORT-SRC] tag={0} bounds={1} center=({2},{3}) source={4}:{5} line={6!r}".format(
-                tag, bounds, center_x, center_y, data.get("source_file"), data.get("source_line"),
+            data["locked"] = wysiwyg_lock_reason(data)
+            if not data["locked"] and not (data.get("at_list_exprs") or []) and not data.get("has_atl"):
+                # Statement has neither an at-clause nor its own ATL block:
+                # the tag may be inheriting a live transform from an earlier
+                # show (keep_running_transform) that the statement text
+                # cannot reveal. A statement with its own ATL block defines
+                # its transform in text, which is already validated above.
+                if not wysiwyg_tag_runtime_at_safe(tag):
+                    data["locked"] = "inherits a transform from an earlier show"
+            wysiwyg_log_debug("[IMPORT-SRC] tag={0} bounds={1} center=({2},{3}) locked={4!r} source={5}:{6} line={7!r}".format(
+                tag, bounds, center_x, center_y, data.get("locked"), data.get("source_file"), data.get("source_line"),
                 wysiwyg_source_line_text(data.get("source_file", ""), data.get("source_line", 0))
             ))
             chars.append(data)
             imported += 1
 
+        editable_chars = [c for c in chars if not c.get("locked")]
+
         if chars and not had_existing_import:
             store.wysiwyg_chars = chars
-            store.wysiwyg_selected_tag = chars[0].get("tag")
-            wysiwyg_restore_imported_preview()
+            store.wysiwyg_selected_tag = editable_chars[0].get("tag") if editable_chars else None
             wysiwyg_refresh_char_bounds(chars, write_original=True)
 
-        for char in chars:
+        # Snapshot the untouched master layer (entries, at-lists, attributes)
+        # before anything is hidden. Closing the editor without saving puts
+        # this exact state back, so the game's own transforms/ATL animations
+        # survive an edit session untouched.
+        WYSIWYG_RUNTIME.master_snapshot = wysiwyg_capture_master_snapshot()
+
+        # Locked characters are never hidden: they stay live on the master
+        # layer (their animation keeps playing) and the editor never touches
+        # them.
+        for char in editable_chars:
             try:
                 renpy.hide(char.get("tag"), layer="master")
             except Exception:
                 pass
 
         store.wysiwyg_chars = chars
-        store.wysiwyg_selected_tag = chars[0].get("tag") if chars else None
+        store.wysiwyg_selected_tag = editable_chars[0].get("tag") if editable_chars else None
 
+        locked_count = len(chars) - len(editable_chars)
+        uncertain = len([c for c in editable_chars if c.get("source_confidence") != "linelog"])
         if imported or bg_seen:
-            wysiwyg_set_status("Imported " + str(imported) + " character(s) from exact source lines.")
+            if locked_count:
+                message = "Imported " + str(len(editable_chars)) + " editable + " + str(locked_count) + " locked character(s)."
+            else:
+                message = "Imported " + str(imported) + " character(s)."
+            if uncertain:
+                message += " " + str(uncertain) + " with uncertain source line - verify in Show Code before saving."
+            wysiwyg_set_status(message)
         else:
             wysiwyg_set_status("No editable scene/show lines found. Advance the scene, then press Import Scene.")
 
@@ -1720,13 +1951,26 @@ init -2 python:
         motion_expr = wysiwyg_motion_fx_at_expression_for_char(char)
         if motion_expr:
             at_parts.append(motion_expr)
-        line = "show " + char.get("image", char.get("tag", "")) + " at " + ", ".join(at_parts)
+        # `show expression`/`as alias` statements must round-trip: writing the
+        # alias as if it were an image name produces a line that crashes the
+        # game on its next execution ("Image '<alias>' not found").
+        if char.get("expression"):
+            target = "expression " + str(char.get("expression"))
+        else:
+            target = char.get("image", char.get("tag", ""))
+        line = "show " + target + " at " + ", ".join(at_parts)
+        if char.get("as_tag"):
+            line += " as " + str(char.get("as_tag"))
         behind = char.get("behind") or []
         if behind:
             line += " behind " + ", ".join([str(i) for i in behind])
         zorder_val = char.get("zorder")
         if zorder_val is not None:
             line += " zorder " + str(int(zorder_val))
+        elif char.get("zorder_raw"):
+            line += " zorder " + str(char.get("zorder_raw"))
+        if char.get("with_expr"):
+            line += " with " + str(char.get("with_expr"))
         return line
 
     def wysiwyg_scene_line():
@@ -1734,52 +1978,537 @@ init -2 python:
             return None
         return "scene " + store.wysiwyg_bg
 
-    def wysiwyg_scriptedit_replace(filename, line, code):
-        # Apply the execution replace_node monkeypatch to avoid LabelNotFound exceptions
-        try:
-            import renpy.execution
-            if not getattr(renpy.execution.Context, "_wysiwyg_patched", False):
-                orig_replace_node = renpy.execution.Context.replace_node
-                def patched_replace_node(self, old, new):
-                    def replace_one(name):
-                        try:
-                            n = renpy.game.script.lookup(name)
-                            if n is old:
-                                return new.name
-                        except Exception:
-                            pass
-                        return name
-                    self.current = replace_one(self.current)
-                    self.return_stack = [replace_one(i) for i in self.return_stack]
-                renpy.execution.Context.replace_node = patched_replace_node
-                renpy.execution.Context._wysiwyg_patched = True
-        except Exception:
-            pass
+    def wysiwyg_line_physical_span(entry):
+        # True number of physical file lines a logical line occupies. When
+        # the line carries a trailing comment, scriptedit tracks it only up
+        # to the '#' (full_text has no final newline), so the last physical
+        # line is not counted by the newlines alone.
+        span = entry.full_text.count("\n")
+        if not entry.full_text.endswith("\n"):
+            span += 1
+        return span or 1
 
+    def wysiwyg_line_comment_text(entry):
+        # The trailing "# comment" of a logical line, or "" when there is
+        # none. scriptedit's full_text stops at the '#', so the body has to
+        # be read from the file itself.
+        if entry.full_text.endswith("\n"):
+            return ""
+        try:
+            with io.open(entry.filename, "r", encoding="utf-8") as handle:
+                data = handle.read()
+        except Exception:
+            return ""
+        start = entry.start + len(entry.full_text)
+        end = data.find("\n", start)
+        if end < 0:
+            end = len(data)
+        return "#" + data[start:end]
+
+    WYSIWYG_PLACEMENT_TRANSFORMS = set([
+        "left", "right", "center", "truecenter", "top", "topleft",
+        "topright", "offscreenleft", "offscreenright", "default", "reset",
+    ])
+
+    # Position-type properties are safe even when the editor cannot parse
+    # their values: the live render bounds capture the resulting position,
+    # and the saved line pins it with explicit xpos/ypos.
+    WYSIWYG_SAFE_POSITION_KWARGS = set([
+        "xpos", "ypos", "xanchor", "yanchor", "xalign", "yalign",
+        "xcenter", "ycenter", "xoffset", "yoffset",
+        "pos", "anchor", "align", "offset",
+    ])
+
+    # Everything the editor actually round-trips: parsed back from the line
+    # text on import AND written out on save. A Transform(...) using any
+    # other keyword (zoom, xsize, crop, function, ...) would be silently
+    # altered by a rewrite, so such statements are locked instead.
+    WYSIWYG_ROUNDTRIP_KWARGS = WYSIWYG_SAFE_POSITION_KWARGS | set([
+        "rotate", "xzoom", "yzoom", "alpha", "blur", "matrixcolor",
+    ])
+
+    WYSIWYG_SAFE_CALLS = set([
+        "Transform", "BrightnessMatrix", "ContrastMatrix", "SaturationMatrix",
+        "HueMatrix", "InvertMatrix", "SepiaMatrix", "IdentityMatrix",
+    ])
+
+    WYSIWYG_NUM_LITERAL_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
+    WYSIWYG_MATRIX_TERM = r"(?:(?:Identity|Sepia)Matrix\(\s*\)|(?:Brightness|Contrast|Saturation|Hue|Invert)Matrix\(\s*-?\d+(?:\.\d+)?\s*\))"
+    WYSIWYG_MATRIX_EXPR_RE = re.compile(r"^" + WYSIWYG_MATRIX_TERM + r"(?:\s*\*\s*" + WYSIWYG_MATRIX_TERM + r")*$")
+
+    def wysiwyg_transform_call_safe(text):
+        # A textual Transform(...) is replace-safe only when every keyword is
+        # one the editor round-trips AND its value is something the import
+        # parser can read back. Checking names alone is not enough:
+        # `alpha=.5` or `rotate=my_var` pass a name check but the import
+        # regex only reads plain numeric literals, so a rewrite would
+        # silently reset them.
+        text = str(text).strip()
+        m = re.match(r"^Transform\s*\(", text)
+        if not m:
+            return False
+        inner = text[m.end():]
+        depth = 1
+        end = None
+        for i, ch in enumerate(inner):
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end is None or inner[end + 1:].strip():
+            return False
+        inner = inner[:end]
+
+        parts = []
+        depth = 0
+        current = ""
+        for ch in inner:
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth -= 1
+            if ch == "," and depth == 0:
+                parts.append(current)
+                current = ""
+            else:
+                current += ch
+        if current.strip():
+            parts.append(current)
+
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            m2 = re.match(r"^([A-Za-z_]\w*)\s*=\s*(.+)$", part, re.S)
+            if not m2:
+                # positional argument (a child displayable etc.)
+                return False
+            name = m2.group(1)
+            value = m2.group(2).strip()
+            if name not in WYSIWYG_ROUNDTRIP_KWARGS:
+                return False
+            if name == "matrixcolor":
+                if not WYSIWYG_MATRIX_EXPR_RE.match(value):
+                    return False
+            elif name not in WYSIWYG_SAFE_POSITION_KWARGS:
+                # rotate/xzoom/yzoom/alpha/blur must be literals the import
+                # parser reads back; positions may be any static expression
+                # because the live bounds re-capture them.
+                if not WYSIWYG_NUM_LITERAL_RE.match(value):
+                    return False
+        return True
+
+    def wysiwyg_at_expr_safe(text):
+        # Can this at-list element be replaced by the editor's Transform
+        # without changing behavior? Only static placement expressions
+        # qualify: the engine placement transforms, the editor's own output
+        # and its motion transforms. Anything else (custom/animated
+        # transforms) makes the character read-only.
+        text = str(text or "").strip()
+        if text in WYSIWYG_PLACEMENT_TRANSFORMS:
+            return True
+        if re.match(r"^wysiwyg_(float|shake|bounce|sink|breathe|sway|blink)_motion\s*\(", text):
+            return True
+        if re.match(r"^Transform\s*\(", text):
+            return wysiwyg_transform_call_safe(text)
+        return False
+
+    def wysiwyg_atl_line_is_static(text):
+        # Validates a whole simple ATL line as `prop value [prop value ...]`
+        # where every prop is a position-type property. A single unknown
+        # token (zoom, a warper, repeat, on, ...) fails the line - matching
+        # only the first word would let `xpos 500 zoom 0.9` slip through and
+        # lose the zoom on rewrite.
+        s = text.strip()
+        while s:
+            m = re.match(r"([A-Za-z_]\w*)\s+", s)
+            if not m:
+                return False
+            if m.group(1) not in WYSIWYG_SAFE_POSITION_KWARGS:
+                return False
+            s = s[m.end():].lstrip()
+            if s.startswith("("):
+                depth = 0
+                end = None
+                for i, ch in enumerate(s):
+                    if ch == "(":
+                        depth += 1
+                    elif ch == ")":
+                        depth -= 1
+                        if depth == 0:
+                            end = i
+                            break
+                if end is None:
+                    return False
+                s = s[end + 1:].lstrip()
+            else:
+                m2 = re.match(r"\S+", s)
+                if not m2:
+                    return False
+                s = s[m2.end():].lstrip()
+        return True
+
+    def wysiwyg_collect_atl_block(filename, line):
+        # The logical lines of the ATL block under the header at `line`,
+        # including blank and comment-only lines inside the block (trailing
+        # ones stay). Returns [] when the header opens no block.
+        # Entries: (Line, physical_span).
+        header = renpy.scriptedit.lines.get((filename, line))
+        if header is None or not header.text.rstrip().endswith(":"):
+            return []
+        header_indent = len(header.text) - len(header.text.lstrip())
+        entries = []
+        pending = []
+        scan = line + wysiwyg_line_physical_span(header)
+        while True:
+            entry = renpy.scriptedit.lines.get((filename, scan))
+            if entry is None:
+                break
+            span = wysiwyg_line_physical_span(entry)
+            if not entry.text.strip():
+                pending.append((entry, span))
+                scan += span
+                continue
+            indent = len(entry.text) - len(entry.text.lstrip())
+            if indent <= header_indent:
+                break
+            entries.extend(pending)
+            pending = []
+            entries.append((entry, span))
+            scan += span
+        return entries
+
+    def wysiwyg_atl_block_is_static(filename, line):
+        # True when every statement in the block is a position-type property
+        # line - such a block can become Transform(...) without losing
+        # behavior (the position is re-captured from the live render). Any
+        # other property, warper, repeat, parallel or event line means the
+        # statement must never be rewritten.
+        for entry, _span in wysiwyg_collect_atl_block(filename, line):
+            text = entry.text.strip()
+            if not text:
+                continue
+            if not wysiwyg_atl_line_is_static(text):
+                return False
+        return True
+
+    def wysiwyg_lock_reason(data):
+        # Decides whether a character may be edited at all. A locked
+        # character stays live on the master layer during editing and is
+        # never hidden, previewed, modified or saved - so its animation or
+        # custom transform cannot be damaged.
+        filename = data.get("source_file")
+        line = data.get("source_line")
+        if not filename or not line:
+            return "shown from code (no source line)"
+        path = wysiwyg_source_path(filename)
+        if not path or not os.path.exists(path):
+            return "source .rpy not on disk"
+        elided = str(filename).replace("\\", "/")
+        if data.get("has_atl"):
+            try:
+                renpy.scriptedit.ensure_loaded(elided)
+                if not wysiwyg_atl_block_is_static(elided, int(line)):
+                    return "animated ATL block"
+            except Exception:
+                return "unreadable ATL block"
+        for expr in (data.get("at_list_exprs") or []):
+            if not wysiwyg_at_expr_safe(expr):
+                return "uses transform '" + str(expr).strip() + "'"
+        return None
+
+    def wysiwyg_runtime_transform_safe(t):
+        # Judges a LIVE at-list entry (a transform object, not source text).
+        # Needed for `show tag attribute` statements with no at-clause: with
+        # config.keep_running_transform the tag inherits the transform of an
+        # earlier show, so the statement text says nothing about it.
+        try:
+            atl = getattr(t, "atl", None)
+            if atl is not None:
+                # ATL-defined transform: safe only if it IS one of the
+                # engine's static placement transforms.
+                for name in WYSIWYG_PLACEMENT_TRANSFORMS:
+                    ref = getattr(renpy.store, name, None)
+                    if ref is not None and getattr(ref, "atl", None) is atl:
+                        return True
+                return False
+            if isinstance(t, Transform):
+                if getattr(t, "function", None) is not None:
+                    return False
+                # Inherited Transform copies lose their kwargs (and in .rpy
+                # python `dict` is RevertableDict, so isinstance checks on
+                # the engine's plain dict fail) - the live TransformState is
+                # the reliable source. Safe when every non-position property
+                # is still at its engine default; position itself is
+                # re-measured from the render bounds.
+                return wysiwyg_transform_state_safe(t)
+            return False
+        except Exception:
+            return False
+
+    def wysiwyg_transform_state_safe(t):
+        # Structural check: every ATL property REGISTERED BY THE ENGINE
+        # (renpy.display.transform.all_properties) must still equal its
+        # class-level default on the live TransformState. Only position-type
+        # properties (re-derived from the render bounds) and pure render
+        # hints may differ. Tracking the engine registry instead of a
+        # hand-maintained list means new/exotic properties (blend, 3D
+        # rotations, uniforms registered as properties, ...) are
+        # unsafe-by-default rather than silently droppable.
+        state = getattr(t, "state", None)
+        if state is None:
+            return False
+        try:
+            transform_module = renpy.display.transform
+            properties = getattr(transform_module, "all_properties", None)
+            if not properties:
+                return False
+            ignore = WYSIWYG_SAFE_POSITION_KWARGS | set(["subpixel", "nearest"])
+            sentinel = object()
+            for name in properties:
+                if name in ignore:
+                    continue
+                live = getattr(state, name, sentinel)
+                default = getattr(transform_module.TransformState, name, sentinel)
+                if live is sentinel or default is sentinel:
+                    continue
+                if live is default:
+                    continue
+                try:
+                    if live == default:
+                        continue
+                except Exception:
+                    return False
+                return False
+            return True
+        except Exception:
+            return False
+
+    def wysiwyg_tag_runtime_at_safe(tag):
+        try:
+            sls = renpy.game.context().scene_lists
+        except Exception:
+            return True
+        try:
+            entries = list(sls.at_list.get("master", {}).get(tag) or [])
+        except Exception:
+            entries = []
+        for entry in entries:
+            if not wysiwyg_runtime_transform_safe(entry):
+                return False
+        # With keep_running_transform the inherited transform often lives
+        # only in the displayable itself: `show tag attr` leaves the at-list
+        # empty and swaps the child of the OLD transform instance
+        # (_change_transform_child). Walk the wrapper chain on the live
+        # scene-list entry as well.
+        try:
+            for sle in sls.layers.get("master", []):
+                if getattr(sle, "tag", None) != tag:
+                    continue
+                d = getattr(sle, "displayable", None)
+                depth = 0
+                while isinstance(d, Transform) and depth < 10:
+                    if not wysiwyg_runtime_transform_safe(d):
+                        return False
+                    d = getattr(d, "child", None)
+                    depth += 1
+        except Exception:
+            return False
+        return True
+
+    def wysiwyg_remove_logical_line(filename, line):
+        # renpy.scriptedit.remove_line tracks a commented line only up to the
+        # '#': it removes the code plus the '#' itself and leaves the comment
+        # body behind as a bare line of text ("Indentation mismatch" on the
+        # next launch). Remove the logical line completely, comment included,
+        # and keep scriptedit's offsets consistent.
+        entry = renpy.scriptedit.lines.get((filename, line))
+        if entry is None:
+            raise Exception("source line " + filename + ":" + str(line) + " is not tracked")
+        has_comment = not entry.full_text.endswith("\n")
+        start = entry.start
+        real_path = entry.filename
+        renpy.scriptedit.remove_line(filename, line)
+        if not has_comment:
+            return
+        with io.open(real_path, "r", encoding="utf-8") as handle:
+            data = handle.read()
+        end = data.find("\n", start)
+        end = (end + 1) if end >= 0 else len(data)
+        leftover = data[start:end]
+        data = data[:start] + data[end:]
+        renpy.scriptedit.adjust_line_locations(filename, line, -len(leftover), -leftover.count("\n"))
+        with renpy.loader.auto_lock:
+            with io.open(real_path, "w", encoding="utf-8") as handle:
+                handle.write(data)
+            renpy.loader.add_auto(real_path, force=True)
+
+    def wysiwyg_scriptedit_replace(filename, line, code):
+        # Replaces one logical source line (plus its ATL block, if any) with
+        # `code`, keeping AST line numbers in sync with the file. Returns the
+        # net change in physical line count so the caller can shift the
+        # remembered source_line of every statement below the edit.
+        #
+        # The renpy.scriptedit primitives are asymmetric: remove_line deletes
+        # the whole logical line (N physical lines when the statement wraps
+        # inside parentheses), while remove_from_ast always shifts AST line
+        # numbers by exactly -1. Without the compensation below, one save of
+        # a wrapped statement desyncs every later edit in the same file and
+        # deletes innocent lines.
         filename = filename.replace("\\", "/")
         line = int(line)
-        wysiwyg_backup_source(filename)
+
+        renpy.scriptedit.ensure_loaded(filename)
+        header = renpy.scriptedit.lines.get((filename, line))
+        if header is None:
+            raise Exception("source line " + filename + ":" + str(line) + " is not editable")
+
+        physical = wysiwyg_line_physical_span(header)
+        header_indent = len(header.text) - len(header.text.lstrip())
+
+        # A trailing comment on the statement is the user's - carry it over
+        # onto the rewritten line.
+        header_comment = wysiwyg_line_comment_text(header)
+        if header_comment:
+            code = code + "  " + header_comment
+
+        # An ATL block under `show x:` consists of separate logical lines
+        # that would be orphaned by replacing the header alone - a parse
+        # error on the next launch. Collect the block (including blank and
+        # comment-only lines inside it) for deletion. The caller (save loop)
+        # is responsible for the pre-save backup.
+        block_lines = [span for _entry, span in wysiwyg_collect_atl_block(filename, line)]
+
+        try:
+            prev_autoreload = renpy.get_autoreload()
+        except Exception:
+            prev_autoreload = False
         try:
             renpy.set_autoreload(False)
         except Exception:
             pass
-        renpy.scriptedit.add_to_ast_before(code, filename, line)
-        renpy.scriptedit.insert_line_before(code, filename, line)
-        renpy.scriptedit.remove_from_ast(filename, line + 1)
-        renpy.scriptedit.remove_line(filename, line + 1)
 
+        # replace_node is patched only for the duration of the AST surgery:
+        # a context's return stack can hold names that are no longer in the
+        # namemap, and the stock lookup raises instead of skipping them.
+        orig_replace_node = renpy.execution.Context.replace_node
 
+        def patched_replace_node(self, old, new):
+            def replace_one(name):
+                try:
+                    if renpy.game.script.lookup(name) is old:
+                        return new.name
+                except Exception:
+                    pass
+                return name
+            self.current = replace_one(self.current)
+            self.return_stack = [replace_one(i) for i in self.return_stack]
+
+        renpy.execution.Context.replace_node = patched_replace_node
+        block_physical = 0
+        try:
+            renpy.scriptedit.add_to_ast_before(code, filename, line)
+            renpy.scriptedit.insert_line_before(code, filename, line)
+            renpy.scriptedit.remove_from_ast(filename, line + 1)
+            wysiwyg_remove_logical_line(filename, line + 1)
+            if physical > 1:
+                # The removal dropped `physical` file lines but remove_from_ast
+                # only shifted the AST by -1; re-align the AST with the file.
+                renpy.scriptedit.adjust_ast_linenumbers(filename, line + 1, -(physical - 1))
+
+            for entry_physical in block_lines:
+                wysiwyg_remove_logical_line(filename, line + 1)
+                block_physical += entry_physical
+            if block_physical:
+                renpy.scriptedit.adjust_ast_linenumbers(filename, line + 1, -block_physical)
+
+            # Echo check: the tracked line must now be exactly what was
+            # written. A mismatch means the surgery landed in the wrong
+            # place; failing loudly here lets the save loop restore the
+            # pre-save backup instead of leaving silent damage.
+            written_entry = renpy.scriptedit.lines.get((filename, line))
+            if written_entry is None or written_entry.text.strip() != code.strip():
+                raise Exception("post-write line check failed at " + filename + ":" + str(line))
+        finally:
+            renpy.execution.Context.replace_node = orig_replace_node
+            if prev_autoreload:
+                try:
+                    renpy.set_autoreload(prev_autoreload)
+                except Exception:
+                    pass
+
+        return 1 - physical - block_physical
+
+    def wysiwyg_capture_master_snapshot():
+        # Captures the master layer exactly as the game built it: scene-list
+        # entries (with their displayables and running transforms), per-tag
+        # at-lists, shown-attribute state and sticky tags.
+        try:
+            sls = renpy.game.context().scene_lists
+            entries = [entry.copy() for entry in sls.layers.get("master", [])]
+            at_list = dict(sls.at_list.get("master", {}))
+            try:
+                showing = set(renpy.get_showing_tags("master"))
+            except Exception:
+                showing = set()
+            shown = []
+            for entry in entries:
+                if not entry.tag:
+                    continue
+                try:
+                    attrs = tuple(sls.shown.get_attributes("master", entry.tag))
+                except Exception:
+                    attrs = ()
+                shown.append(((entry.tag,) + attrs, entry.tag in showing))
+            sticky = {}
+            for tag, layer in getattr(sls, "sticky_tags", {}).items():
+                if layer == "master":
+                    sticky[tag] = layer
+            return {"entries": entries, "at_list": at_list, "shown": shown, "sticky": sticky}
+        except Exception:
+            return None
+
+    def wysiwyg_restore_master_snapshot():
+        snapshot = WYSIWYG_RUNTIME.master_snapshot
+        if not snapshot:
+            return False
+        try:
+            sls = renpy.game.context().scene_lists
+            sls.layers["master"][:] = [entry.copy() for entry in snapshot["entries"]]
+            sls.at_list["master"].clear()
+            sls.at_list["master"].update(snapshot["at_list"])
+            for name, was_showing in snapshot["shown"]:
+                try:
+                    sls.shown.predict_show("master", name, show=was_showing)
+                except Exception:
+                    pass
+            for tag, layer in snapshot["sticky"].items():
+                sls.sticky_tags[tag] = layer
+            return True
+        except Exception:
+            return False
 
     def wysiwyg_restore_imported_preview():
-        bg_image = store.wysiwyg_bg_runtime or store.wysiwyg_bg
-        if bg_image:
-            try:
-                renpy.scene(layer="master")
-                renpy.show(bg_image, layer="master")
-            except Exception:
-                pass
+        # Closing without saving: put back the exact scene-list entries that
+        # were captured at import, so the game's own transforms and running
+        # ATL animations are untouched and nothing from the preview leaks
+        # into the running game. Tags the editor never imported (incl. the
+        # background and blacklisted overlays) are never touched.
+        if not store.wysiwyg_saved_runtime:
+            if wysiwyg_restore_master_snapshot():
+                wysiwyg_log_debug("[RESTORE] master snapshot restored")
+                return
 
+        # After a save the source file is the new truth: re-show each edited
+        # tag with its saved values. This is an approximation for tags whose
+        # original statement had game-side at-transforms. Locked characters
+        # were never hidden, so they are never re-shown either.
         for char in store.wysiwyg_chars:
+            if char.get("locked"):
+                continue
             tag = char.get("tag")
             image_name = char.get("runtime_image") or char.get("image", tag)
             try:
@@ -1879,9 +2608,115 @@ init -2 python:
     # Rounds the edited values, rewrites each character's source line via
     # renpy.scriptedit (AST + file in one step), then refreshes original_*
     # so closing the editor keeps the just-saved state on screen.
+    def wysiwyg_char_dirty(char):
+        # True when the user actually changed something versus the imported
+        # (or last saved) state. Clean statements are never rewritten: a
+        # rewrite normalizes the line and would silently drop game-side
+        # at-transforms even when the user touched nothing.
+        w = wysiwyg_float(char.get("w", 0.0), 0.0)
+        h = wysiwyg_float(char.get("h", 0.0), 0.0)
+        cx = int(round(wysiwyg_float(char.get("x", 0.0), 0.0) + w / 2.0))
+        cy = int(round(wysiwyg_float(char.get("y", 0.0), 0.0) + h / 2.0))
+        ocx = char.get("original_parsed_center_x")
+        ocy = char.get("original_parsed_center_y")
+        if ocx is None or int(round(wysiwyg_float(ocx, cx))) != cx:
+            return True
+        if ocy is None or int(round(wysiwyg_float(ocy, cy))) != cy:
+            return True
+
+        numeric = (
+            ("rotate", 0.0, 0.05),
+            ("xzoom", 1.0, 0.0005),
+            ("yzoom", 1.0, 0.0005),
+            ("alpha", 1.0, 0.0005),
+            ("filter_blur", 0.0, 0.0005),
+            ("filter_brightness", 0.0, 0.0005),
+            ("filter_contrast", 1.0, 0.0005),
+            ("filter_saturation", 1.0, 0.0005),
+            ("filter_hue", 0.0, 0.0005),
+            ("filter_invert", 0.0, 0.0005),
+            ("motion_fx_strength", 1.0, 0.0005),
+        )
+        for key, default, tolerance in numeric:
+            current = wysiwyg_float(char.get(key, default), default)
+            original = wysiwyg_float(char.get("original_" + key, default), default)
+            if abs(current - original) > tolerance:
+                return True
+
+        if bool(char.get("filter_sepia", False)) != bool(char.get("original_filter_sepia", False)):
+            return True
+        current_fx = str(char.get("motion_fx", "none") or "none").strip().lower()
+        original_fx = str(char.get("original_motion_fx", "none") or "none").strip().lower()
+        if current_fx != original_fx:
+            return True
+        if char.get("zorder") != char.get("original_zorder"):
+            return True
+        return False
+
+    def wysiwyg_validate_save_target(char):
+        # Re-checks, immediately before writing, that the remembered source
+        # location still holds the statement we imported. This is the last
+        # line of defense when the line-log/heuristic match was wrong or the
+        # file changed since import.
+        filename = char.get("source_file")
+        line = char.get("source_line")
+        if not filename or not line:
+            return "no source line"
+        if str(filename).replace("\\", "/") in WYSIWYG_RUNTIME.failed_files:
+            return "saving to this file is disabled after a failed write - restart the game"
+        path = wysiwyg_source_path(filename)
+        if not path or not os.path.exists(path):
+            return "source .rpy not on disk (archived or .rpyc-only build?)"
+        text = wysiwyg_source_line_text(filename, line)
+        if not re.match(r"show(\s|:|$)", text.strip()):
+            return "line " + str(line) + " is no longer a show statement - re-import"
+        try:
+            nodes = renpy.scriptedit.nodes_on_line(str(filename).replace("\\", "/"), int(line))
+        except Exception:
+            nodes = []
+        for node in nodes:
+            if not isinstance(node, renpy.ast.Show):
+                continue
+            _, _, node_tag, _, _ = wysiwyg_imspec_parts(getattr(node, "imspec", None))
+            if node_tag == char.get("tag"):
+                return None
+        return "statement at line " + str(line) + " no longer matches this tag - re-import"
+
+    WYSIWYG_MOTION_FX_FILE = "wysiwyg_motion_fx.rpy"
+    WYSIWYG_MOTION_FX_HEADER = (
+        "# Generated by WYSIWYG Scene Editor " + WYSIWYG_VERSION + ".\n"
+        "# Standalone definitions of the wysiwyg_*_motion transforms used by\n"
+        "# saved show statements. Ship this file with the game (or keep the\n"
+        "# editor installed) so those statements keep working.\n"
+    )
+
+    def wysiwyg_ensure_motion_fx_file():
+        # Saved lines can reference wysiwyg_*_motion transforms. Those must
+        # not depend on the editor file staying installed, so the transforms
+        # are materialized once into a small standalone .rpy.
+        path = os.path.join(wysiwyg_game_dir(), WYSIWYG_MOTION_FX_FILE)
+        if os.path.exists(path):
+            return
+        source = None
+        editor_path = os.path.join(wysiwyg_game_dir(), "wysiwyg_editor.rpy")
+        try:
+            with io.open(editor_path, "r", encoding="utf-8") as handle:
+                editor_source = handle.read()
+            match = re.search(r"(^transform wysiwyg_float_motion.*?)(?=^# =)", editor_source, re.S | re.M)
+            if match:
+                source = match.group(1).rstrip() + "\n"
+        except Exception:
+            source = None
+        if not source:
+            return
+        with io.open(path, "w", encoding="utf-8") as handle:
+            handle.write(WYSIWYG_MOTION_FX_HEADER + "\n" + source)
+
     def wysiwyg_save_changes():
         changed = 0
+        skipped_clean = 0
         errors = []
+        written = []
 
         for char in store.wysiwyg_chars:
             if "xzoom" in char:
@@ -1904,29 +2739,82 @@ init -2 python:
             char["anchor_x"] = char["x"]
             char["anchor_y"] = char["y"]
 
-        if store.wysiwyg_bg and store.wysiwyg_bg_source:
-            try:
-                wysiwyg_scriptedit_replace(store.wysiwyg_bg_source["file"], store.wysiwyg_bg_source["line"], wysiwyg_scene_line())
-                changed += 1
-            except Exception as exc:
-                errors.append("background: " + str(exc))
+        # The background is never editable in the editor, so its scene line
+        # is never rewritten (rewriting it would strip the game's at-list).
 
+        needs_motion_file = False
+        batch_backups = {}
         for char in store.wysiwyg_chars:
             try:
-                if not char.get("source_file") or not char.get("source_line"):
-                    errors.append(char.get("tag", "?") + ": no source line")
+                if char.get("locked"):
+                    continue
+                if not wysiwyg_char_dirty(char):
+                    skipped_clean += 1
+                    continue
+                problem = wysiwyg_validate_save_target(char)
+                if problem:
+                    errors.append(char.get("tag", "?") + ": " + problem)
                     continue
                 line_to_write = wysiwyg_position_line_for_char(char)
+                edited_file = str(char["source_file"]).replace("\\", "/")
+                edited_line = int(char["source_line"])
+                if edited_file not in batch_backups:
+                    batch_backups[edited_file] = wysiwyg_backup_source(edited_file)
                 wysiwyg_log_debug("[SAVE] tag={0} source={1}:{2} code={3}".format(
-                    char.get("tag"), char.get("source_file"), char.get("source_line"), line_to_write
+                    char.get("tag"), edited_file, edited_line, line_to_write
                 ))
-                wysiwyg_scriptedit_replace(char["source_file"], char["source_line"], line_to_write)
+                delta = wysiwyg_scriptedit_replace(edited_file, edited_line, line_to_write)
+                char["has_atl"] = False
+                if "wysiwyg_" in line_to_write and "_motion(" in line_to_write:
+                    needs_motion_file = True
+                if delta:
+                    # The edit changed the physical line count: shift every
+                    # remembered location below it in the same file.
+                    for other in store.wysiwyg_chars:
+                        if other is char:
+                            continue
+                        if str(other.get("source_file", "")).replace("\\", "/") != edited_file:
+                            continue
+                        if int(other.get("source_line", 0) or 0) > edited_line:
+                            other["source_line"] = int(other["source_line"]) + delta
+                    bg_source = store.wysiwyg_bg_source
+                    if bg_source and str(bg_source.get("file", "")).replace("\\", "/") == edited_file:
+                        if int(bg_source.get("line", 0) or 0) > edited_line:
+                            bg_source["line"] = int(bg_source["line"]) + delta
                 changed += 1
+                written.append(char)
             except Exception as exc:
                 errors.append(char.get("tag", "?") + ": " + str(exc))
 
+        if needs_motion_file:
+            try:
+                wysiwyg_ensure_motion_fx_file()
+            except Exception as exc:
+                errors.append("motion fx file: " + str(exc))
+
+        # Post-save verification: every touched file must still parse with the
+        # engine parser. A failure restores the pre-save backup on the spot
+        # and disables further saves to that file until the game restarts.
+        failed_now = set()
+        for edited_file, backup in batch_backups.items():
+            problem = wysiwyg_verify_file_parses(edited_file)
+            if not problem:
+                continue
+            failed_now.add(edited_file)
+            WYSIWYG_RUNTIME.failed_files.add(edited_file)
+            if wysiwyg_restore_backup(edited_file, backup):
+                errors.append(edited_file + ": save verification FAILED (" + problem + ") - file restored from backup; restart the game before saving it again")
+            else:
+                errors.append(edited_file + ": save verification FAILED (" + problem + ") - AUTO-RESTORE FAILED, restore manually from " + str(backup))
+            wysiwyg_log_debug("[VERIFY-FAIL] file={0} problem={1} backup={2}".format(edited_file, problem, backup))
+
+        if failed_now:
+            reverted = [c for c in written if str(c.get("source_file", "")).replace("\\", "/") in failed_now]
+            written = [c for c in written if str(c.get("source_file", "")).replace("\\", "/") not in failed_now]
+            changed -= len(reverted)
+
         if changed:
-            for char in store.wysiwyg_chars:
+            for char in written:
                 char["original_x"] = wysiwyg_float(char.get("x", 0.0), 0.0)
                 char["original_y"] = wysiwyg_float(char.get("y", 0.0), 0.0)
                 char["original_anchor_x"] = wysiwyg_float(char.get("anchor_x", char.get("x", 0.0)), 0.0)
@@ -1947,11 +2835,18 @@ init -2 python:
                 char["original_parsed_center_x"] = char.get("parsed_center_x", char.get("x", 0.0) + wysiwyg_float(char.get("w", 0.0), 0.0) / 2.0)
                 char["original_parsed_center_y"] = char.get("parsed_center_y", char.get("y", 0.0) + wysiwyg_float(char.get("h", 0.0), 0.0) / 2.0)
             store.wysiwyg_saved_runtime = True
+            # The import-time snapshot now describes a PRE-save scene. If it
+            # were kept, closing with any unsaved tweak after this save would
+            # visually roll the scene back behind what the file says. From
+            # now on closing reconstructs from the saved values instead.
+            WYSIWYG_RUNTIME.master_snapshot = None
 
         if errors:
             wysiwyg_set_status("Saved " + str(changed) + " line(s), errors: " + "; ".join(errors[:2]))
         elif changed:
-            wysiwyg_set_status("Saved " + str(changed) + " exact source line(s). Backup files end with .wysiwyg.bak.")
+            wysiwyg_set_status("Saved " + str(changed) + " changed line(s), verified. Backups in game/wysiwyg_backups/.")
+        elif skipped_clean and store.wysiwyg_chars:
+            wysiwyg_set_status("No changes to save - " + str(skipped_clean) + " character(s) match their source lines.")
         else:
             wysiwyg_set_status("Nothing to save. Import Scene first.")
 
@@ -1963,9 +2858,6 @@ init -2 python:
         char = wysiwyg_find_char(tag)
         if char:
             store.wysiwyg_selected_tag = tag
-            old_x = int(char.get("x", 0))
-            old_y = int(char.get("y", 0))
-            
             img_w = wysiwyg_float(char.get("img_w", char.get("original_w", 400.0)), 400.0)
             img_h = wysiwyg_float(char.get("img_h", char.get("original_h", 800.0)), 800.0)
 
@@ -1979,21 +2871,26 @@ init -2 python:
 
             new_x = new_cx - (img_w * xzoom_val) / 2.0
             new_y = new_cy - (img_h * yzoom_val) / 2.0
-            
-            if old_x != new_x or old_y != new_y:
+
+            # A click that releases without real movement must not mark the
+            # scene dirty: after a save, a phantom 0px "drag" would switch
+            # the close path away from the just-saved state.
+            old_cx = int(round(wysiwyg_float(char.get("x", 0.0), 0.0) + (img_w * xzoom_val) / 2.0))
+            old_cy = int(round(wysiwyg_float(char.get("y", 0.0), 0.0) + (img_h * yzoom_val) / 2.0))
+            if old_cx != new_cx or old_cy != new_cy:
                 wysiwyg_push_undo(char)
-            char["x"] = new_x
-            char["y"] = new_y
-            store.wysiwyg_saved_runtime = False
-            char["anchor_x"] = wysiwyg_float(char.get("x", 0), 0.0)
-            char["anchor_y"] = wysiwyg_float(char.get("y", 0), 0.0)
-            char["parsed_center_x"] = new_cx
-            char["parsed_center_y"] = new_cy
-            char["parsed_x"] = True
-            char["parsed_y"] = True
-            store.wysiwyg_pos_input_tag = None
-            if store.wysiwyg_panel == "code":
-                store.wysiwyg_code = wysiwyg_build_code()
+                char["x"] = new_x
+                char["y"] = new_y
+                store.wysiwyg_saved_runtime = False
+                char["anchor_x"] = wysiwyg_float(char.get("x", 0), 0.0)
+                char["anchor_y"] = wysiwyg_float(char.get("y", 0), 0.0)
+                char["parsed_center_x"] = new_cx
+                char["parsed_center_y"] = new_cy
+                char["parsed_x"] = True
+                char["parsed_y"] = True
+                store.wysiwyg_pos_input_tag = None
+                if store.wysiwyg_panel == "code":
+                    store.wysiwyg_code = wysiwyg_build_code()
         renpy.restart_interaction()
 
 
@@ -2218,6 +3115,9 @@ init -2 python:
         if not char:
             wysiwyg_set_status("No selected character to reset.")
             return
+        if char.get("locked"):
+            wysiwyg_set_status("Locked: " + str(char.get("locked")) + " - this character is never modified.")
+            return
         store.wysiwyg_selected_tag = tag
         wysiwyg_push_undo(char)
         
@@ -2259,6 +3159,7 @@ init -2 python:
     def wysiwyg_reset_editor():
         if store.wysiwyg_chars or store.wysiwyg_bg:
             wysiwyg_restore_imported_preview()
+        WYSIWYG_RUNTIME.master_snapshot = None
         store.wysiwyg_bg = None
         store.wysiwyg_bg_runtime = None
         store.wysiwyg_bg_source = None
@@ -2270,6 +3171,7 @@ init -2 python:
         wysiwyg_set_status("Editor cleared. Unsaved moves were discarded.")
 
     def wysiwyg_clear_editor_state():
+        WYSIWYG_RUNTIME.master_snapshot = None
         store.wysiwyg_bg = None
         store.wysiwyg_bg_runtime = None
         store.wysiwyg_bg_source = None
@@ -2280,6 +3182,7 @@ init -2 python:
         store.wysiwyg_saved_runtime = False
         store.wysiwyg_show_code = False
         store.wysiwyg_code = ""
+        store.wysiwyg_status = ""
         store.wysiwyg_rotation_input = ""
         store.wysiwyg_rotation_input_tag = None
         store.wysiwyg_pos_input_x = ""
@@ -2293,12 +3196,17 @@ init -2 python:
                 wysiwyg_restore_imported_preview()
             wysiwyg_clear_editor_state()
             # Re-enable skipping that was disabled while the editor was open.
-            config.allow_skipping = getattr(store, "_wysiwyg_prev_allow_skipping", True)
+            if WYSIWYG_RUNTIME.prev_allow_skipping is not None:
+                config.allow_skipping = WYSIWYG_RUNTIME.prev_allow_skipping
+                WYSIWYG_RUNTIME.prev_allow_skipping = None
         else:
+            if not wysiwyg_enabled():
+                # Development tool only: never activate in a shipped build.
+                return
             wysiwyg_clear_editor_state()
             store.wysiwyg_status = "Editor opened. Click Import Scene to track the current scene."
             # While editing, nothing may advance the game: Ctrl-skip included.
-            store._wysiwyg_prev_allow_skipping = getattr(config, "allow_skipping", True)
+            WYSIWYG_RUNTIME.prev_allow_skipping = getattr(config, "allow_skipping", True)
             config.allow_skipping = False
             try:
                 config.skipping = None
@@ -2312,7 +3220,10 @@ init -2 python:
         if store.wysiwyg_bg:
             lines.append(wysiwyg_scene_line())
         for char in store.wysiwyg_chars:
-            lines.append(wysiwyg_position_line_for_char(char))
+            if char.get("locked"):
+                lines.append("# " + str(char.get("tag")) + ": locked (" + str(char.get("locked")) + ") - source line is never rewritten")
+            else:
+                lines.append(wysiwyg_position_line_for_char(char))
         if len(lines) == 1:
             lines.append("# Nothing imported yet. Click Import Scene first.")
         return "\n".join(lines)
@@ -2520,7 +3431,7 @@ screen wysiwyg_main():
     on "show" action Function(wysiwyg_hide_master_chars)
     on "replace" action Function(wysiwyg_hide_master_chars)
     $ _selected_drag_char = wysiwyg_find_char(wysiwyg_selected_tag) if wysiwyg_selected_tag else None
-    if _selected_drag_char and _selected_drag_char.get("preview_hidden"):
+    if _selected_drag_char and (_selected_drag_char.get("preview_hidden") or _selected_drag_char.get("locked")):
         $ _selected_drag_char = None
 
     if wysiwyg_grid:
@@ -2542,7 +3453,7 @@ screen wysiwyg_main():
         key "shift_K_DOWN" action Function(wysiwyg_nudge_selected, 0, 10)
 
     for _wch in sorted(wysiwyg_chars, key=lambda c: int(c.get("zorder") or 0)):
-        if _wch.get("tag") != wysiwyg_selected_tag and not _wch.get("preview_hidden"):
+        if _wch.get("tag") != wysiwyg_selected_tag and not _wch.get("preview_hidden") and not _wch.get("locked"):
             $ _wch_cx = int(round(_wch.get("x") + _wch.get("w") / 2.0))
             $ _wch_cy = int(round(_wch.get("y") + _wch.get("h") / 2.0))
             if wysiwyg_motion_fx_uses_placement(_wch):
@@ -2581,7 +3492,10 @@ screen wysiwyg_main():
                 padding (8, 4)
                 xpos int(_wch.get("x", 0))
                 ypos max(0, int(_wch.get("y", 0)) - 28)
-                text wysiwyg_ui_text(wysiwyg_char_label(_wch.get("tag"))) color wysiwyg_char_color(_wch.get("tag")) style "wysiwyg_small_text"
+                if _wch.get("locked"):
+                    text (wysiwyg_ui_text(wysiwyg_char_label(_wch.get("tag"))) + " (locked)") color wysiwyg_char_color(_wch.get("tag")) style "wysiwyg_small_text"
+                else:
+                    text wysiwyg_ui_text(wysiwyg_char_label(_wch.get("tag"))) color wysiwyg_char_color(_wch.get("tag")) style "wysiwyg_small_text"
 
     frame:
         style "wysiwyg_toolbar_frame"
@@ -2673,11 +3587,16 @@ screen wysiwyg_p_characters():
                             text "No tracked characters. Advance the game and press Import Scene." style "wysiwyg_small_text"
                         for _wch in wysiwyg_chars:
                             $ _w_tag = _wch.get("tag")
+                            $ _w_locked = _wch.get("locked")
                             hbox:
                                 spacing 4
-                                textbutton wysiwyg_ui_text(wysiwyg_char_label(_w_tag)) style "wysiwyg_button" xsize int(170 * _ui_s) action SetVariable("wysiwyg_selected_tag", _w_tag) selected (_w_tag == wysiwyg_selected_tag)
-                                textbutton ("Show" if _wch.get("preview_hidden") else "Hide") style "wysiwyg_button" xminimum 56 action Function(wysiwyg_toggle_preview_hidden, _w_tag)
-                                textbutton "Reset" style "wysiwyg_button" xminimum 56 action Function(wysiwyg_reset_position_for, _w_tag)
+                                if _w_locked:
+                                    textbutton (wysiwyg_ui_text(wysiwyg_char_label(_w_tag)) + " (locked)") style "wysiwyg_button" xsize int(170 * _ui_s) action Function(wysiwyg_set_status, "Locked: " + str(_w_locked) + " - stays live in the game, never modified or saved.")
+                                    text "live" style "wysiwyg_small_text" yalign 0.5
+                                else:
+                                    textbutton wysiwyg_ui_text(wysiwyg_char_label(_w_tag)) style "wysiwyg_button" xsize int(170 * _ui_s) action SetVariable("wysiwyg_selected_tag", _w_tag) selected (_w_tag == wysiwyg_selected_tag)
+                                    textbutton ("Show" if _wch.get("preview_hidden") else "Hide") style "wysiwyg_button" xminimum 56 action Function(wysiwyg_toggle_preview_hidden, _w_tag)
+                                    textbutton "Reset" style "wysiwyg_button" xminimum 56 action Function(wysiwyg_reset_position_for, _w_tag)
                 vbar value YScrollValue("wys_char_list") style "wysiwyg_vbar"
 
         if _selected_char:
@@ -2923,7 +3842,10 @@ screen wysiwyg_p_code():
                                 vbox:
                                     spacing 4
                                     text wysiwyg_ui_text(_wch.get("image")) style "wysiwyg_small_text"
-                                    text wysiwyg_ui_text(wysiwyg_position_line_for_char(_wch)) style "wysiwyg_small_text" xsize 148
+                                    if _wch.get("locked"):
+                                        text wysiwyg_ui_text("locked (" + str(_wch.get("locked")) + ") - never rewritten") style "wysiwyg_small_text" xsize 148
+                                    else:
+                                        text wysiwyg_ui_text(wysiwyg_position_line_for_char(_wch)) style "wysiwyg_small_text" xsize 148
 
 init 999 python:
     wysiwyg_init()

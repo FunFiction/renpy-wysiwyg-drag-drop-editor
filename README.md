@@ -38,7 +38,10 @@ No more guess-and-test positioning or editing coordinates in your text editor. J
 
 - **Live Drag-and-Drop Layout**: Click and drag any sprite on the screen to reposition it instantly.
 - **Direct Source Code Rewriting**: When you click **Save Changes**, the editor locates the exact `show` or `scene` statements that rendered the active sprites (using Ren'Py's execution line log `config.line_log`) and rewrites the parameters in-place inside your `.rpy` files using `renpy.scriptedit`.
-- **Automatic Backups**: Creates a `.wysiwyg.bak` backup file of any edited script before modifying it, ensuring your work is always safe.
+- **Automatic Backups + Write Verification**: Before every save, each touched file is backed up into `game/wysiwyg_backups/` (rotated, 10 newest per file plus the session baseline). After every save the whole file is re-parsed with the engine parser — if anything is wrong, the backup is restored automatically on the spot.
+- **Only Changed Lines Are Written**: Characters you did not modify are never rewritten, so untouched statements keep their original transitions, at-lists and formatting.
+- **Animated Characters Are Locked, Not Broken**: A character shown with an animated ATL block or a custom transform is imported as *locked* — it stays live and animated on screen, cannot be dragged, and its source line is never rewritten. Static placements (`at left/center/right`, plain `Transform(...)`, static ATL blocks) stay fully editable.
+- **Motion FX are self-contained**: the first save that uses a Motion FX also writes `game/wysiwyg_motion_fx.rpy` with standalone transform definitions, so saved lines keep working even if you remove the editor before release.
 - **Bypasses Default Anchors**: Grabs live bounds via `renpy.get_image_bounds`. The parsed source line is only trusted if it matches the live render within 2 pixels, making the editor work in any game regardless of its custom anchors or menu branches.
 - **Center-Based Anchoring**: Saves lines in the format `show TAG at Transform(xpos=CX, ypos=CY, xanchor=0.5, yanchor=0.5, ...)`. Center anchors are invariant under rotation and scaling, and explicit anchors prevent issues with default game configurations.
 - **Rotated Bounding Box Match**: The drag container matches the renderer's exact rotated bounding box (incorporating `rotate_pad=True` calculations and integer clipping) to avoid 1px shifting bugs when saving.
@@ -131,15 +134,27 @@ No more guess-and-test positioning or editing coordinates in your text editor. J
 ### Viewport Vertical Scrollbar Workaround
 Ren'Py 8.5.x has a known bug where `scrollbars "vertical"` inside a `viewport` silently breaks child rendering or shows an empty viewport. This editor bypasses the issue entirely by using a separate `vbar` component mapped to `YScrollValue`, combined with `mousewheel True` and `draggable True` on the viewport.
 
-### File Backups
-Before modifying any file, the editor automatically creates a backup copy with a `.wysiwyg.bak` extension in the same folder. 
+### File Backups & Write Verification
+Every click of **Save Changes** first copies each file it is about to touch into `game/wysiwyg_backups/<file>.<timestamp>.bak` — so every save has its own restore point, not just the first one of the session.
 
-> [!IMPORTANT]
-> This is a **one-time baseline backup**. The editor will **never overwrite** an existing `.wysiwyg.bak` file, meaning it permanently preserves the original state of your code from before the editor touched it. 
-> 
-> If you make manual code changes in an external editor and want to refresh this baseline backup, simply delete the old `.wysiwyg.bak` file. A new one will be generated automatically on your next save.
+After writing, the editor immediately re-parses the whole file with Ren'Py's own parser:
 
-To restore an original file, replace the modified `.rpy` file with the corresponding `.bak` backup.
+- if the file parses, the save is confirmed in the status bar ("verified");
+- if it does not, the pre-save backup is **restored automatically**, the save is reported as failed, and saving to that file is disabled until the game restarts (so a desynced session cannot keep writing).
+
+> [!NOTE]
+> The backups folder is rotated automatically: the 10 newest backups per file are kept, plus the first backup of the current session (your pre-editor baseline). Delete `game/wysiwyg_backups/` whenever you want a clean slate.
+
+To restore an original file manually, replace the modified `.rpy` file with the corresponding `.bak` from `game/wysiwyg_backups/`.
+
+### Locked (Read-Only) Characters
+Characters whose `show` statement uses an **animated ATL block** (e.g. `linear`, `ease`, `repeat`), a **custom named transform**, or that were shown **from Python code**, are imported as *locked*:
+
+- they stay live on the master layer — their animation keeps playing while you edit others;
+- they cannot be selected, dragged or reset, and their source line is **never rewritten**;
+- the On Scene list and Show Code panel state the reason (e.g. `uses transform 'wobble'`).
+
+Static placements are not affected: `at left`, `at center`, `at right`, explicit `Transform(...)` calls and ATL blocks containing only static properties (`xpos`, `ypos`, `zoom`, …) remain fully editable.
 
 ### Non-interactive Quit Confirmation Block
 If you click the OS window's close **"X"** button to exit the game while the editor overlay is open, Ren'Py's default quit confirmation prompt ("Are you sure you want to quit?") will appear, but you will be unable to click "Yes" or "No". 
