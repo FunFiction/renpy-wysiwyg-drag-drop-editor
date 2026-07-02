@@ -90,6 +90,8 @@ init -2 python:
             self.failed_files = set()
             self.master_snapshot = None
             self.prev_allow_skipping = None
+            # Rows of the add-sprite file browser, refreshed on open.
+            self.image_browser = None
             # True execution-ordered line log (newest last, duplicates kept).
             # The engine's own line log deduplicates entries, so its order is
             # first-execution order — wrong for "which show ran most
@@ -1680,6 +1682,7 @@ init -2 python:
     # (current values + original_* copies used by the reset buttons).
     def wysiwyg_import_scene():
         had_existing_import = bool(store.wysiwyg_chars or store.wysiwyg_bg)
+        dropped_pending = len([c for c in store.wysiwyg_chars if c.get("pending_insert")])
 
         if store.wysiwyg_chars or store.wysiwyg_bg:
             wysiwyg_restore_imported_preview()
@@ -1910,9 +1913,195 @@ init -2 python:
                 message = "Imported " + str(imported) + " character(s)."
             if uncertain:
                 message += " " + str(uncertain) + " with uncertain source line - verify in Show Code before saving."
+            if dropped_pending:
+                message += " " + str(dropped_pending) + " added-but-unsaved sprite(s) were discarded."
             wysiwyg_set_status(message)
         else:
             wysiwyg_set_status("No editable scene/show lines found. Advance the scene, then press Import Scene.")
+
+    # --- Adding new sprites ---------------------------------------------------
+    # The file browser lists game/images/ ONLY - the directory Ren'Py
+    # auto-defines images from. Selection is the sole input (there is no
+    # free path field), so files outside game/images/ can never be added.
+    WYSIWYG_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".avif")
+
+    def wysiwyg_image_name_problem(name):
+        parts = str(name or "").split()
+        if not parts:
+            return "empty name"
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", parts[0]):
+            return "tag must start with a letter"
+        for part in parts[1:]:
+            if not re.match(r"^[A-Za-z0-9_]+$", part):
+                return "bad attribute '" + part + "'"
+        return None
+
+    def wysiwyg_list_image_files():
+        rows = []
+        try:
+            files = renpy.list_files()
+        except Exception:
+            files = []
+        for fn in sorted(files):
+            low = str(fn).replace("\\", "/").lower()
+            if not low.startswith("images/"):
+                continue
+            if not low.endswith(WYSIWYG_IMAGE_EXTS):
+                continue
+            name = os.path.splitext(os.path.basename(str(fn)))[0]
+            rows.append({
+                "file": str(fn),
+                "name": name,
+                "problem": wysiwyg_image_name_problem(name),
+            })
+        return rows
+
+    def wysiwyg_toggle_image_browser():
+        if store.wysiwyg_char_page == "add":
+            store.wysiwyg_char_page = "main"
+        else:
+            WYSIWYG_RUNTIME.image_browser = wysiwyg_list_image_files()
+            store.wysiwyg_char_page = "add"
+        renpy.restart_interaction()
+
+    def wysiwyg_add_character(image_name):
+        # Creates a pending character: fully editable in the preview, but no
+        # source line yet - Save Changes INSERTS a new `show` statement
+        # before the statement the game is paused on.
+        image_name = str(image_name or "").strip()
+        problem = wysiwyg_image_name_problem(image_name)
+        if problem:
+            wysiwyg_set_status("Cannot add: " + problem)
+            return
+        tag = image_name.split()[0]
+        if wysiwyg_find_char(tag):
+            wysiwyg_set_status("Tag '" + tag + "' is already tracked - edit it in On Scene.")
+            return
+        try:
+            showing = set(renpy.get_showing_tags("master"))
+        except Exception:
+            showing = set()
+        if tag in showing:
+            wysiwyg_set_status("Tag '" + tag + "' is already on the scene - use Import Scene first.")
+            return
+        filename, line = wysiwyg_get_current_position()
+        if not filename or not line:
+            wysiwyg_set_status("Cannot add: current script position is unknown.")
+            return
+        path = wysiwyg_source_path(filename)
+        if not path or not os.path.exists(path):
+            wysiwyg_set_status("Cannot add: the current statement is not in an editable .rpy file.")
+            return
+
+        img_w, img_h = wysiwyg_get_image_size(image_name, tag)
+        if img_w <= 0.01:
+            img_w = 400.0
+        if img_h <= 0.01:
+            img_h = 800.0
+        cx = int(round(wysiwyg_screen_w() / 2.0))
+        cy = int(round(wysiwyg_screen_h() / 2.0))
+
+        char = {
+            "key": tag,
+            "tag": tag,
+            "image": image_name,
+            "runtime_image": image_name,
+            "expression": None,
+            "as_tag": None,
+            "with_expr": None,
+            "at_list_exprs": [],
+            "has_atl": False,
+            "source_confidence": "new",
+            "source_file": "",
+            "source_line": 0,
+            "zorder": None,
+            "zorder_raw": None,
+            "original_zorder": None,
+            "behind": [],
+            "unsaved": True,
+            "pending_insert": True,
+            "locked": None,
+            "img_w": img_w,
+            "img_h": img_h,
+            "w": img_w,
+            "h": img_h,
+            "x": float(cx - img_w / 2.0),
+            "y": float(cy - img_h / 2.0),
+            "parsed_x": True,
+            "parsed_y": True,
+            "parsed_center_x": cx,
+            "parsed_center_y": cy,
+            "rotate": 0.0,
+            "xzoom": 1.0,
+            "yzoom": 1.0,
+            "alpha": 1.0,
+            "motion_fx": "none",
+            "motion_fx_strength": 1.0,
+        }
+        char["anchor_x"] = char["x"]
+        char["anchor_y"] = char["y"]
+        char.update(wysiwyg_default_color_filter_values())
+        for key in ("x", "y", "w", "h", "anchor_x", "anchor_y", "rotate",
+                    "xzoom", "yzoom", "alpha", "motion_fx", "motion_fx_strength",
+                    "parsed_center_x", "parsed_center_y"):
+            char["original_" + str(key)] = char[key]
+        for key, value in wysiwyg_default_color_filter_values().items():
+            char["original_" + key] = value
+        for transform_key in ("rotate", "xzoom", "yzoom", "alpha"):
+            store.wysiwyg_transform_memory[tag + ":" + transform_key] = char[transform_key]
+
+        store.wysiwyg_chars.append(char)
+        store.wysiwyg_selected_tag = tag
+        store.wysiwyg_saved_runtime = False
+        store.wysiwyg_char_page = "main"
+        wysiwyg_set_status("Added '" + image_name + "' - drag it into place; Save Changes writes the new show line.")
+
+    def wysiwyg_scriptedit_insert(filename, line, code):
+        # Inserts a brand-new statement before filename:line. Returns the
+        # physical line delta (+1) for the caller's bookkeeping.
+        filename = filename.replace("\\", "/")
+        line = int(line)
+        renpy.scriptedit.ensure_loaded(filename)
+        if renpy.scriptedit.lines.get((filename, line)) is None:
+            raise Exception("insert target " + filename + ":" + str(line) + " is not editable")
+
+        try:
+            prev_autoreload = renpy.get_autoreload()
+        except Exception:
+            prev_autoreload = False
+        try:
+            renpy.set_autoreload(False)
+        except Exception:
+            pass
+
+        orig_replace_node = renpy.execution.Context.replace_node
+
+        def patched_replace_node(self, old, new):
+            def replace_one(name):
+                try:
+                    if renpy.game.script.lookup(name) is old:
+                        return new.name
+                except Exception:
+                    pass
+                return name
+            self.current = replace_one(self.current)
+            self.return_stack = [replace_one(i) for i in self.return_stack]
+
+        renpy.execution.Context.replace_node = patched_replace_node
+        try:
+            renpy.scriptedit.add_to_ast_before(code, filename, line)
+            renpy.scriptedit.insert_line_before(code, filename, line)
+            written_entry = renpy.scriptedit.lines.get((filename, line))
+            if written_entry is None or written_entry.text.strip() != code.strip():
+                raise Exception("post-insert line check failed at " + filename + ":" + str(line))
+        finally:
+            renpy.execution.Context.replace_node = orig_replace_node
+            if prev_autoreload:
+                try:
+                    renpy.set_autoreload(prev_autoreload)
+                except Exception:
+                    pass
+        return 1
 
     def wysiwyg_position_line_for_char(char):
         rotate_val = wysiwyg_float(char.get("rotate", 0.0), 0.0)
@@ -2505,9 +2694,10 @@ init -2 python:
         # After a save the source file is the new truth: re-show each edited
         # tag with its saved values. This is an approximation for tags whose
         # original statement had game-side at-transforms. Locked characters
-        # were never hidden, so they are never re-shown either.
+        # were never hidden, so they are never re-shown either; pending
+        # (added but not yet saved) characters must not leak onto the scene.
         for char in store.wysiwyg_chars:
-            if char.get("locked"):
+            if char.get("locked") or char.get("pending_insert"):
                 continue
             tag = char.get("tag")
             image_name = char.get("runtime_image") or char.get("image", tag)
@@ -2744,9 +2934,62 @@ init -2 python:
 
         needs_motion_file = False
         batch_backups = {}
+        # Insert target for newly added sprites, fetched ONCE per save:
+        # add_to_ast_before repoints ctx.current at the inserted node, so
+        # asking for the current position again after the first insert would
+        # reverse the order of subsequently inserted lines.
+        pending_target = None
         for char in store.wysiwyg_chars:
             try:
                 if char.get("locked"):
+                    continue
+                if char.get("pending_insert"):
+                    # A newly added sprite: INSERT a fresh show line before
+                    # the statement the game is paused on, instead of
+                    # replacing an existing one.
+                    if pending_target is None:
+                        target_file, target_line = wysiwyg_get_current_position()
+                        if not target_file or not target_line:
+                            errors.append(char.get("tag", "?") + ": current script position unknown")
+                            continue
+                        pending_target = (str(target_file).replace("\\", "/"), int(target_line))
+                    target_file, target_line = pending_target
+                    if target_file in WYSIWYG_RUNTIME.failed_files:
+                        errors.append(char.get("tag", "?") + ": saving to this file is disabled after a failed write - restart the game")
+                        continue
+                    target_path = wysiwyg_source_path(target_file)
+                    if not target_path or not os.path.exists(target_path):
+                        errors.append(char.get("tag", "?") + ": current statement is not in an editable .rpy file")
+                        continue
+                    line_to_write = wysiwyg_position_line_for_char(char)
+                    if target_file not in batch_backups:
+                        batch_backups[target_file] = wysiwyg_backup_source(target_file)
+                    wysiwyg_log_debug("[INSERT] tag={0} target={1}:{2} code={3}".format(
+                        char.get("tag"), target_file, target_line, line_to_write
+                    ))
+                    delta = wysiwyg_scriptedit_insert(target_file, target_line, line_to_write)
+                    char["source_file"] = target_file
+                    char["source_line"] = target_line
+                    char["pending_insert"] = False
+                    char["source_confidence"] = "linelog"
+                    # The next added sprite goes right below this one, still
+                    # above the statement the game is paused on.
+                    pending_target = (target_file, target_line + 1)
+                    for other in store.wysiwyg_chars:
+                        if other is char:
+                            continue
+                        if str(other.get("source_file", "")).replace("\\", "/") != target_file:
+                            continue
+                        if int(other.get("source_line", 0) or 0) >= target_line:
+                            other["source_line"] = int(other["source_line"]) + delta
+                    bg_source = store.wysiwyg_bg_source
+                    if bg_source and str(bg_source.get("file", "")).replace("\\", "/") == target_file:
+                        if int(bg_source.get("line", 0) or 0) >= target_line:
+                            bg_source["line"] = int(bg_source["line"]) + delta
+                    if "wysiwyg_" in line_to_write and "_motion(" in line_to_write:
+                        needs_motion_file = True
+                    changed += 1
+                    written.append(char)
                     continue
                 if not wysiwyg_char_dirty(char):
                     skipped_clean += 1
@@ -3571,7 +3814,10 @@ screen wysiwyg_p_characters():
 
         # --- On Scene: fixed height list with a visible scrollbar, so the
         # --- controls below never move no matter how many characters exist.
-        text ("On Scene (" + str(len(wysiwyg_chars)) + ")") style "wysiwyg_title_text"
+        hbox:
+            spacing 10
+            text ("On Scene (" + str(len(wysiwyg_chars)) + ")") style "wysiwyg_title_text"
+            textbutton ("Close list" if wysiwyg_char_page == "add" else "+ Add") style "wysiwyg_section_button" text_style "wysiwyg_section_button_text" action Function(wysiwyg_toggle_image_browser) selected (wysiwyg_char_page == "add")
         frame:
             background Solid("#00000066")
             padding (6, 6)
@@ -3655,7 +3901,10 @@ screen wysiwyg_p_characters():
                         spacing 8
                         xfill True
 
-                        if wysiwyg_char_page == "color":
+                        if wysiwyg_char_page == "add":
+                            use wysiwyg_p_add_browser
+
+                        elif wysiwyg_char_page == "color":
                             textbutton "Reset filters to defaults" style "wysiwyg_button" action Function(wysiwyg_reset_selected_color_filters_to_defaults)
                             null height 2
                             text ("Blur: " + str(int(wysiwyg_float(_selected_char.get("filter_blur", 0.0), 0.0))) + " px") style "wysiwyg_small_text"
@@ -3767,11 +4016,45 @@ screen wysiwyg_p_characters():
                             bar value DictValue(_selected_char, "alpha", 1.0, step=0.01, action=Function(wysiwyg_drag_transform_slider, _sel_tag, "alpha")) style "wysiwyg_slider" released Function(wysiwyg_release_transform_slider, _sel_tag, "alpha")
                 vbar value YScrollValue("wys_char_controls") style "wysiwyg_vbar"
         else:
-            frame:
-                background Solid("#00000066")
-                padding (8, 8)
-                xfill True
-                text "Select a character from On Scene." style "wysiwyg_small_text"
+            if wysiwyg_char_page == "add":
+                side "c r":
+                    viewport:
+                        id "wys_add_browser"
+                        mousewheel True
+                        ysize _mid_h
+                        xfill True
+                        vbox:
+                            spacing 8
+                            xfill True
+                            use wysiwyg_p_add_browser
+                    vbar value YScrollValue("wys_add_browser") style "wysiwyg_vbar"
+            else:
+                frame:
+                    background Solid("#00000066")
+                    padding (8, 8)
+                    xfill True
+                    text "Select a character from On Scene." style "wysiwyg_small_text"
+
+# Add-sprite browser: names come only from files enumerated under
+# game/images/ - there is no path input, so nothing outside that folder
+# can be picked.
+screen wysiwyg_p_add_browser():
+    text "Add sprite from game/images/" style "wysiwyg_text" bold True
+    text "Pick a file; the sprite appears mid-screen. Save Changes writes the show line into the script." style "wysiwyg_small_text"
+    $ _rows = WYSIWYG_RUNTIME.image_browser or []
+    if not _rows:
+        text "No image files found in game/images/." style "wysiwyg_small_text"
+    for _row in _rows:
+        if _row.get("problem"):
+            vbox:
+                spacing 0
+                text wysiwyg_ui_text(_row.get("name", "")) style "wysiwyg_small_text"
+                text wysiwyg_ui_text("cannot add: " + str(_row.get("problem")) + "  [" + str(_row.get("file")) + "]") style "wysiwyg_small_text"
+        else:
+            vbox:
+                spacing 0
+                textbutton wysiwyg_ui_text(_row.get("name", "")) style "wysiwyg_button" xfill True action Function(wysiwyg_add_character, _row.get("name"))
+                text wysiwyg_ui_text(_row.get("file", "")) style "wysiwyg_small_text"
 
 # Right-side panel, Show Code mode: original source lines next to the
 # lines Save Changes would write.
