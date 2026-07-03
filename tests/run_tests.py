@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Test runner for the WYSIWYG editor.
 
 Each directory under cases/ is a small, self-contained Ren'Py project with

@@ -42,25 +42,17 @@
 default wysiwyg_active = False
 default wysiwyg_panel = "characters"
 default wysiwyg_bg = None
-default wysiwyg_bg_runtime = None
 default wysiwyg_bg_source = None
 default wysiwyg_chars = []
 default wysiwyg_status = ""
-default wysiwyg_show_code = False
-default wysiwyg_code = ""
 default wysiwyg_saved_runtime = False
 default wysiwyg_selected_tag = None
 default wysiwyg_undo_stack = []
 default wysiwyg_transform_memory = {}
-default wysiwyg_rotation_input = ""
-default wysiwyg_rotation_input_tag = None
 default wysiwyg_scale_locked = True
 default wysiwyg_grid = False
 default wysiwyg_char_page = "main"
 default wysiwyg_nudge_step = 1
-default wysiwyg_pos_input_x = ""
-default wysiwyg_pos_input_y = ""
-default wysiwyg_pos_input_tag = None
 default wysiwyg_edit_field = None
 default wysiwyg_edit_buffer = ""
 default wysiwyg_browser_filter = ""
@@ -76,20 +68,16 @@ init -2 python:
     import re
     import io
     import math
-    import struct
     import time
-    import zlib
 
     WYSIWYG_VERSION = "0.3.0"
     WYSIWYG_BLACKLIST = set(["black", "white", "text", "vtext", "side", "icon", "ui", "button"])
-    WYSIWYG_ALPHA_CACHE = {}
 
-    class _WysiwygRuntime(object):
+    class _WysiwygRuntime:
         # Session-only state. Held on a single object that is assigned once at
         # init and never rebound, so none of it is written into player save
         # files or participates in rollback (unlike the default screen vars).
         def __init__(self):
-            self.session_stamp = time.strftime("%Y%m%d-%H%M%S")
             # path -> first backup made this session (never pruned).
             self.first_backup = {}
             # Elided filenames whose post-save verification failed; saving to
@@ -174,146 +162,10 @@ init -2 python:
         store.wysiwyg_status = text
         renpy.restart_interaction()
 
-    def wysiwyg_safe_name(value, fallback="sprite"):
-        value = re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "")).strip("_")
-        if not value:
-            value = fallback
-        if value[0].isdigit():
-            value = "_" + value
-        return value
-
     def wysiwyg_source_path(filename):
         if not filename or not filename.startswith("game/"):
             return None
         return os.path.join(wysiwyg_game_dir(), filename[5:].replace("/", os.sep))
-
-    def wysiwyg_image_file_for_name(image_name):
-        image_name = str(image_name or "").strip()
-        if not image_name:
-            return None
-
-        pattern = re.compile(r"^\s*image\s+" + re.escape(image_name) + r"\s*=\s*[\"']([^\"']+)[\"']")
-        game_dir = wysiwyg_game_dir()
-
-        for root, dirs, files in os.walk(game_dir):
-            for filename in files:
-                if not filename.endswith(".rpy"):
-                    continue
-                path = os.path.join(root, filename)
-                try:
-                    with io.open(path, "r", encoding="utf-8") as handle:
-                        for line in handle:
-                            match = pattern.match(line)
-                            if match:
-                                return os.path.join(game_dir, match.group(1).replace("/", os.sep))
-                except Exception:
-                    pass
-
-        fallback = os.path.join(game_dir, image_name.replace(" ", "_") + ".png")
-        if os.path.exists(fallback):
-            return fallback
-        return None
-
-    # --- PNG alpha analysis -------------------------------------------------
-    # Decodes a PNG manually (no PIL inside Ren'Py) to find the first and
-    # last rows with visible pixels. Used for edge snapping so transparent
-    # padding in sprite files does not count as part of the character.
-    def wysiwyg_png_alpha_bounds(path):
-        if not path or not os.path.exists(path):
-            return None
-        if path in WYSIWYG_ALPHA_CACHE:
-            return WYSIWYG_ALPHA_CACHE[path]
-
-        try:
-            with open(path, "rb") as handle:
-                data = handle.read()
-            if data[:8] != b"\x89PNG\r\n\x1a\n":
-                return None
-
-            pos = 8
-            width = height = color_type = bit_depth = None
-            compressed = []
-
-            while pos + 8 <= len(data):
-                length = struct.unpack(">I", data[pos:pos + 4])[0]
-                chunk = data[pos + 4:pos + 8]
-                payload = data[pos + 8:pos + 8 + length]
-                pos += 12 + length
-
-                if chunk == b"IHDR":
-                    width, height, bit_depth, color_type = struct.unpack(">IIBB", payload[:10])
-                elif chunk == b"IDAT":
-                    compressed.append(payload)
-                elif chunk == b"IEND":
-                    break
-
-            if not width or not height or bit_depth != 8:
-                return None
-            if color_type == 6:
-                channels = 4
-                alpha_index = 3
-            elif color_type == 4:
-                channels = 2
-                alpha_index = 1
-            else:
-                result = {"width": width, "height": height, "top": 0, "bottom": 0}
-                WYSIWYG_ALPHA_CACHE[path] = result
-                return result
-
-            raw = zlib.decompress(b"".join(compressed))
-            stride = width * channels
-            prev = bytearray(stride)
-            offset = 0
-            min_y = height
-            max_y = -1
-
-            for y in range(height):
-                filter_type = raw[offset]
-                offset += 1
-                row = bytearray(raw[offset:offset + stride])
-                offset += stride
-
-                for i in range(stride):
-                    left = row[i - channels] if i >= channels else 0
-                    up = prev[i]
-                    up_left = prev[i - channels] if i >= channels else 0
-
-                    if filter_type == 1:
-                        row[i] = (row[i] + left) & 0xff
-                    elif filter_type == 2:
-                        row[i] = (row[i] + up) & 0xff
-                    elif filter_type == 3:
-                        row[i] = (row[i] + ((left + up) >> 1)) & 0xff
-                    elif filter_type == 4:
-                        p = left + up - up_left
-                        pa = abs(p - left)
-                        pb = abs(p - up)
-                        pc = abs(p - up_left)
-                        pr = left if pa <= pb and pa <= pc else (up if pb <= pc else up_left)
-                        row[i] = (row[i] + pr) & 0xff
-
-                for x in range(width):
-                    if row[x * channels + alpha_index] > 0:
-                        if y < min_y:
-                            min_y = y
-                        if y > max_y:
-                            max_y = y
-                        break
-
-                prev = row
-
-            if max_y < 0:
-                result = {"width": width, "height": height, "top": 0, "bottom": 0}
-            else:
-                result = {"width": width, "height": height, "top": min_y, "bottom": height - 1 - max_y}
-
-            WYSIWYG_ALPHA_CACHE[path] = result
-            return result
-        except Exception:
-            return None
-
-    def wysiwyg_alpha_bounds_for_image(image_name):
-        return wysiwyg_png_alpha_bounds(wysiwyg_image_file_for_name(image_name))
 
     def wysiwyg_get_image_size(image_name, tag=None):
         img_name = image_name
@@ -517,7 +369,7 @@ init -2 python:
         # can never ellipsize differently.
         text = str(text)
         if len(text) > limit:
-            text = text[:max(1, limit - 1)] + u"…"
+            text = text[:max(1, limit - 1)] + "…"
         return text
 
     def wysiwyg_short_label(tag, limit=16):
@@ -570,7 +422,7 @@ init -2 python:
         # them a legal break point without changing what the user sees.
         s = wysiwyg_ui_text(value)
         zwsp = chr(0x200B)
-        return re.sub(u"([/\\\\_.,()\\-])", u"\\1" + zwsp, s)
+        return re.sub("([/\\\\_.,()\\-])", "\\1" + zwsp, s)
 
     def wysiwyg_char_color(tag):
         obj = getattr(store, tag, None)
@@ -670,29 +522,6 @@ init -2 python:
                 result["motion_fx_strength"] = wysiwyg_float(motion_match.group(2), 1.0)
 
         return result
-
-    def wysiwyg_char_anchor_pos(char, use_original=False):
-        if use_original:
-            if "original_anchor_x" in char and "original_anchor_y" in char:
-                return (
-                    wysiwyg_float(char.get("original_anchor_x"), 0.0),
-                    wysiwyg_float(char.get("original_anchor_y"), 0.0),
-                )
-            x_key = "original_x"
-            y_key = "original_y"
-        else:
-            if "anchor_x" in char and "anchor_y" in char:
-                return (
-                    wysiwyg_float(char.get("anchor_x"), 0.0),
-                    wysiwyg_float(char.get("anchor_y"), 0.0),
-                )
-            x_key = "x"
-            y_key = "y"
-        x = wysiwyg_float(char.get(x_key, char.get("x", 0)), 0.0)
-        y = wysiwyg_float(char.get(y_key, char.get("y", 0)), 0.0)
-        w = wysiwyg_float(char.get("w", 0), 0.0)
-        h = wysiwyg_float(char.get("h", 0), 0.0)
-        return x + (w / 2.0), y + (h / 2.0)
 
     def wysiwyg_hide_master_chars():
         for char in store.wysiwyg_chars:
@@ -872,19 +701,7 @@ init -2 python:
         store.wysiwyg_transform_memory[tag + ":" + key] = value
         store.wysiwyg_selected_tag = tag
         store.wysiwyg_saved_runtime = False
-        if key == "rotate":
-            store.wysiwyg_rotation_input_tag = tag
-            store.wysiwyg_rotation_input = wysiwyg_fmt_float(value, 1)
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
         renpy.restart_interaction()
-
-    def wysiwyg_adjust_char_transform(tag, key, delta):
-        char = wysiwyg_find_char(tag)
-        if not char:
-            wysiwyg_set_status("No selected character.")
-            return
-        wysiwyg_set_char_transform(tag, key, wysiwyg_float(char.get(key, 0.0), 0.0) + delta)
 
     def wysiwyg_flip_char(tag, key):
         char = wysiwyg_find_char(tag)
@@ -900,8 +717,6 @@ init -2 python:
         store.wysiwyg_transform_memory[tag + ":" + key] = char[key]
         store.wysiwyg_selected_tag = tag
         store.wysiwyg_saved_runtime = False
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
         renpy.restart_interaction()
 
     def wysiwyg_ensure_color_filter_state(char):
@@ -938,8 +753,6 @@ init -2 python:
         char[key] = not bool(char.get(key, False))
         store.wysiwyg_selected_tag = tag
         store.wysiwyg_saved_runtime = False
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
         renpy.restart_interaction()
 
     def wysiwyg_char_filter_value(char, key, default, use_original=False):
@@ -960,10 +773,6 @@ init -2 python:
         if not char:
             return False
         return str(char.get("motion_fx", "none") or "none").strip().lower() in ("float", "shake", "bounce", "sink")
-
-    def wysiwyg_motion_fx_pad(char):
-        strength = wysiwyg_clamp(wysiwyg_float(char.get("motion_fx_strength", 1.0), 1.0), 0.0, 2.0)
-        return int(round(10 + (22 * strength)))
 
     def wysiwyg_motion_fx_placement_transform(char):
         effect = str(char.get("motion_fx", "none") or "none").strip().lower()
@@ -1053,10 +862,7 @@ init -2 python:
             matrixcolor=wysiwyg_matrixcolor_for_char(char, use_original=use_original),
         )
 
-        if abs(rotate_val) > 0.01:
-            kwargs["rotate"] = rotate_val
-        else:
-            kwargs["rotate"] = None
+        kwargs["rotate"] = rotate_val if abs(rotate_val) > 0.01 else None
 
         return kwargs
 
@@ -1210,8 +1016,6 @@ init -2 python:
         char["filter_invert"] = wysiwyg_clamp(wysiwyg_float(char.get("filter_invert", 0.0), 0.0), 0.0, 1.0)
         store.wysiwyg_selected_tag = tag
         store.wysiwyg_saved_runtime = False
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
         renpy.restart_interaction()
 
     def wysiwyg_on_motion_fx_change(tag):
@@ -1223,28 +1027,7 @@ init -2 python:
         char["motion_fx_strength"] = wysiwyg_clamp(wysiwyg_float(char.get("motion_fx_strength", 1.0), 1.0), 0.0, 2.0)
         store.wysiwyg_selected_tag = tag
         store.wysiwyg_saved_runtime = False
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
         renpy.restart_interaction()
-
-    def wysiwyg_reset_selected_color_filters():
-        char = wysiwyg_find_char(store.wysiwyg_selected_tag)
-        if not char:
-            wysiwyg_set_status("No selected character.")
-            return
-        wysiwyg_push_undo(char)
-        wysiwyg_ensure_color_filter_state(char)
-        char["filter_blur"] = wysiwyg_float(char.get("original_filter_blur", 0.0), 0.0)
-        char["filter_brightness"] = wysiwyg_float(char.get("original_filter_brightness", 0.0), 0.0)
-        char["filter_contrast"] = wysiwyg_float(char.get("original_filter_contrast", 1.0), 1.0)
-        char["filter_saturation"] = wysiwyg_float(char.get("original_filter_saturation", 1.0), 1.0)
-        char["filter_hue"] = wysiwyg_float(char.get("original_filter_hue", 0.0), 0.0)
-        char["filter_invert"] = wysiwyg_float(char.get("original_filter_invert", 0.0), 0.0)
-        char["filter_sepia"] = bool(char.get("original_filter_sepia", False))
-        store.wysiwyg_saved_runtime = False
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
-        wysiwyg_set_status("Reset selected color filters.")
 
     def wysiwyg_reset_selected_color_filters_to_defaults():
         char = wysiwyg_find_char(store.wysiwyg_selected_tag)
@@ -1256,8 +1039,6 @@ init -2 python:
         for key, value in wysiwyg_default_color_filter_values().items():
             char[key] = value
         store.wysiwyg_saved_runtime = False
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
         wysiwyg_set_status("Reset selected color filters to defaults.")
 
     def wysiwyg_reset_selected_color_filter_key(tag, key):
@@ -1272,8 +1053,6 @@ init -2 python:
         char[key] = defaults[key]
         store.wysiwyg_selected_tag = tag
         store.wysiwyg_saved_runtime = False
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
         renpy.restart_interaction()
 
     def wysiwyg_set_motion_fx(tag, effect):
@@ -1306,8 +1085,6 @@ init -2 python:
         char["motion_fx"] = "none"
         char["motion_fx_strength"] = 1.0
         store.wysiwyg_saved_runtime = False
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
         renpy.restart_interaction()
         wysiwyg_set_status("Motion FX reset to defaults.")
 
@@ -1332,16 +1109,12 @@ init -2 python:
             wysiwyg_update_char_size(char)
         elif key == "rotate":
             char[key] = round(wysiwyg_clamp(current, -180.0, 180.0), 1)
-            store.wysiwyg_rotation_input_tag = tag
-            store.wysiwyg_rotation_input = wysiwyg_fmt_float(char[key], 1)
         elif key == "alpha":
             char[key] = round(wysiwyg_clamp(current, 0.0, 1.0), 3)
 
         
         store.wysiwyg_selected_tag = tag
         store.wysiwyg_saved_runtime = False
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
         renpy.restart_interaction()
 
     def wysiwyg_release_transform_slider(tag, key):
@@ -1406,7 +1179,6 @@ init -2 python:
         store.wysiwyg_selected_tag = tag
         store.wysiwyg_saved_runtime = False
         if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
             renpy.restart_interaction()
 
     def wysiwyg_toggle_scale_lock():
@@ -1422,37 +1194,6 @@ init -2 python:
                 store.wysiwyg_transform_memory[char.get("tag") + ":yzoom"] = value
                 store.wysiwyg_saved_runtime = False
         renpy.restart_interaction()
-
-    def wysiwyg_rotation_input_text(tag):
-        char = wysiwyg_find_char(tag)
-        if not char:
-            store.wysiwyg_rotation_input_tag = None
-            store.wysiwyg_rotation_input = ""
-            return ""
-        current_text = wysiwyg_fmt_float(char.get("rotate", 0.0), 1)
-        if store.wysiwyg_rotation_input_tag != tag:
-            store.wysiwyg_rotation_input_tag = tag
-            store.wysiwyg_rotation_input = current_text
-        return store.wysiwyg_rotation_input
-
-    def wysiwyg_apply_rotation_input(tag):
-        char = wysiwyg_find_char(tag)
-        if not char:
-            wysiwyg_set_status("No selected character.")
-            return
-        text = str(store.wysiwyg_rotation_input or "").strip().replace(",", ".")
-        if not text:
-            store.wysiwyg_rotation_input = wysiwyg_fmt_float(char.get("rotate", 0.0), 1)
-            wysiwyg_set_status("Rotation value cannot be empty.")
-            return
-        value = wysiwyg_float(text, None)
-        if value is None:
-            store.wysiwyg_rotation_input = wysiwyg_fmt_float(char.get("rotate", 0.0), 1)
-            wysiwyg_set_status("Rotation must be a number.")
-            return
-        wysiwyg_set_char_transform(tag, "rotate", value)
-        store.wysiwyg_rotation_input_tag = tag
-        store.wysiwyg_rotation_input = wysiwyg_fmt_float(wysiwyg_find_char(tag).get("rotate", 0.0), 1)
 
     def wysiwyg_reset_selected_transform():
         char = wysiwyg_find_char(store.wysiwyg_selected_tag)
@@ -1470,10 +1211,6 @@ init -2 python:
         store.wysiwyg_transform_memory[char.get("tag") + ":yzoom"] = char["yzoom"]
         store.wysiwyg_transform_memory[char.get("tag") + ":alpha"] = char["alpha"]
         store.wysiwyg_saved_runtime = False
-        store.wysiwyg_rotation_input_tag = char.get("tag")
-        store.wysiwyg_rotation_input = wysiwyg_fmt_float(char.get("rotate", 0.0), 1)
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
         wysiwyg_set_status("Reset selected character transform.")
 
     def wysiwyg_reset_selected_transform_to_defaults():
@@ -1492,10 +1229,6 @@ init -2 python:
         store.wysiwyg_transform_memory[char.get("tag") + ":yzoom"] = 1.0
         store.wysiwyg_transform_memory[char.get("tag") + ":alpha"] = 1.0
         store.wysiwyg_saved_runtime = False
-        store.wysiwyg_rotation_input_tag = char.get("tag")
-        store.wysiwyg_rotation_input = "0"
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
         wysiwyg_set_status("Reset selected character transform to defaults.")
 
     def wysiwyg_x_position_targets_for_char(char):
@@ -1544,8 +1277,6 @@ init -2 python:
         char["parsed_center_x"] = cx
         char["parsed_x"] = True
         store.wysiwyg_saved_runtime = False
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
         wysiwyg_set_status("Placed on Ren'Py " + str(target_name) + ".")
 
     def wysiwyg_current_image_name(tag):
@@ -1810,12 +1541,10 @@ init -2 python:
 
         store.wysiwyg_saved_runtime = False
         store.wysiwyg_bg = None
-        store.wysiwyg_bg_runtime = None
         store.wysiwyg_bg_source = None
         store.wysiwyg_scene_with = None
         store.wysiwyg_chars = []
         store.wysiwyg_transform_memory = {}
-        store.wysiwyg_rotation_input_tag = None
 
         try:
             showing_tags = set(renpy.get_showing_tags("master"))
@@ -1830,7 +1559,6 @@ init -2 python:
         if bg_node:
             image_name = bg_node["image"]
             store.wysiwyg_bg = image_name
-            store.wysiwyg_bg_runtime = image_name
             store.wysiwyg_bg_source = {"file": bg_node["source_file"], "line": bg_node["source_line"], "image": image_name}
             bg_seen = True
 
@@ -1843,7 +1571,6 @@ init -2 python:
                 if not bg_seen:
                     bg_seen = True
                     store.wysiwyg_bg = image_name
-                    store.wysiwyg_bg_runtime = image_name
                     bg_ast = wysiwyg_find_source_safely(tag, image_name, is_bg=False)
                     if bg_ast:
                         store.wysiwyg_bg_source = {"file": bg_ast["source_file"], "line": bg_ast["source_line"], "image": image_name}
@@ -2321,7 +2048,7 @@ init -2 python:
             return
         if char.get("pending_insert"):
             store.wysiwyg_chars.remove(char)
-            for key in list(store.wysiwyg_transform_memory.keys()):
+            for key in list(store.wysiwyg_transform_memory):
                 if str(key).startswith(str(tag) + ":"):
                     del store.wysiwyg_transform_memory[key]
             if store.wysiwyg_selected_tag == tag:
@@ -2689,11 +2416,6 @@ init -2 python:
     # altered by a rewrite, so such statements are locked instead.
     WYSIWYG_ROUNDTRIP_KWARGS = WYSIWYG_SAFE_POSITION_KWARGS | set([
         "rotate", "xzoom", "yzoom", "alpha", "blur", "matrixcolor",
-    ])
-
-    WYSIWYG_SAFE_CALLS = set([
-        "Transform", "BrightnessMatrix", "ContrastMatrix", "SaturationMatrix",
-        "HueMatrix", "InvertMatrix", "SepiaMatrix", "IdentityMatrix",
     ])
 
     WYSIWYG_NUM_LITERAL_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
@@ -4094,9 +3816,6 @@ transform wysiwyg_blink_motion(strength=1.0):
                 char["parsed_center_y"] = new_cy
                 char["parsed_x"] = True
                 char["parsed_y"] = True
-                store.wysiwyg_pos_input_tag = None
-                if store.wysiwyg_panel == "code":
-                    store.wysiwyg_code = wysiwyg_build_code()
         renpy.restart_interaction()
 
 
@@ -4138,10 +3857,7 @@ transform wysiwyg_blink_motion(strength=1.0):
                 for transform_key in ("rotate", "xzoom", "yzoom", "alpha"):
                     store.wysiwyg_transform_memory[char.get("tag") + ":" + transform_key] = char[transform_key]
                 store.wysiwyg_selected_tag = char.get("tag")
-                store.wysiwyg_rotation_input_tag = None
                 store.wysiwyg_saved_runtime = False
-                if store.wysiwyg_panel == "code":
-                    store.wysiwyg_code = wysiwyg_build_code()
                 wysiwyg_set_status("Undid last move.")
                 return
         wysiwyg_set_status("Nothing to undo.")
@@ -4162,10 +3878,7 @@ transform wysiwyg_blink_motion(strength=1.0):
         char["parsed_center_y"] = round(char["y"] + h / 2.0)
         char["parsed_x"] = True
         char["parsed_y"] = True
-        store.wysiwyg_pos_input_tag = None
         store.wysiwyg_saved_runtime = False
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
         renpy.restart_interaction()
 
     def wysiwyg_adjust_zorder(tag, delta):
@@ -4177,8 +3890,6 @@ transform wysiwyg_blink_motion(strength=1.0):
         char["zorder"] = current + int(delta)
         store.wysiwyg_selected_tag = tag
         store.wysiwyg_saved_runtime = False
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
         renpy.restart_interaction()
 
     def wysiwyg_toggle_preview_hidden(tag):
@@ -4271,8 +3982,6 @@ transform wysiwyg_blink_motion(strength=1.0):
             char["parsed_x"] = True
             char["parsed_y"] = True
             store.wysiwyg_saved_runtime = False
-            if store.wysiwyg_panel == "code":
-                store.wysiwyg_code = wysiwyg_build_code()
             wysiwyg_set_status("Moved center to " + str(cx) + ", " + str(cy) + ".")
         elif field == "rot":
             value = wysiwyg_float(text.replace(",", "."), None)
@@ -4299,49 +4008,6 @@ transform wysiwyg_blink_motion(strength=1.0):
             else:
                 wysiwyg_set_scene_with(expr)
         renpy.restart_interaction()
-
-    def wysiwyg_pos_input_sync(tag):
-        char = wysiwyg_find_char(tag)
-        if not char:
-            store.wysiwyg_pos_input_tag = None
-            store.wysiwyg_pos_input_x = ""
-            store.wysiwyg_pos_input_y = ""
-            return "", ""
-        if store.wysiwyg_pos_input_tag != tag:
-            store.wysiwyg_pos_input_tag = tag
-            w = wysiwyg_float(char.get("w", 0.0), 0.0)
-            h = wysiwyg_float(char.get("h", 0.0), 0.0)
-            store.wysiwyg_pos_input_x = str(int(round(wysiwyg_float(char.get("x", 0.0), 0.0) + w / 2.0)))
-            store.wysiwyg_pos_input_y = str(int(round(wysiwyg_float(char.get("y", 0.0), 0.0) + h / 2.0)))
-        return store.wysiwyg_pos_input_x, store.wysiwyg_pos_input_y
-
-    def wysiwyg_apply_pos_input(tag):
-        char = wysiwyg_find_char(tag)
-        if not char:
-            wysiwyg_set_status("No selected character.")
-            return
-        try:
-            cx = int(str(store.wysiwyg_pos_input_x or "").strip().replace(",", "."))
-            cy = int(str(store.wysiwyg_pos_input_y or "").strip().replace(",", "."))
-        except Exception:
-            store.wysiwyg_pos_input_tag = None
-            wysiwyg_set_status("Center position must be whole numbers.")
-            return
-        wysiwyg_push_undo(char)
-        w = wysiwyg_float(char.get("w", 0.0), 0.0)
-        h = wysiwyg_float(char.get("h", 0.0), 0.0)
-        char["x"] = cx - w / 2.0
-        char["y"] = cy - h / 2.0
-        char["anchor_x"] = char["x"]
-        char["anchor_y"] = char["y"]
-        char["parsed_center_x"] = cx
-        char["parsed_center_y"] = cy
-        char["parsed_x"] = True
-        char["parsed_y"] = True
-        store.wysiwyg_saved_runtime = False
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
-        wysiwyg_set_status("Moved center to " + str(cx) + ", " + str(cy) + ".")
 
     def wysiwyg_reset_position_for(tag):
         char = wysiwyg_find_char(tag)
@@ -4380,10 +4046,7 @@ transform wysiwyg_blink_motion(strength=1.0):
         char["parsed_center_y"] = orig_cy
         char["parsed_x"] = True
         char["parsed_y"] = True
-        store.wysiwyg_pos_input_tag = None
         store.wysiwyg_saved_runtime = False
-        if store.wysiwyg_panel == "code":
-            store.wysiwyg_code = wysiwyg_build_code()
         wysiwyg_set_status("Reset selected character to imported position.")
 
     def wysiwyg_reset_selected_position():
@@ -4394,7 +4057,6 @@ transform wysiwyg_blink_motion(strength=1.0):
             wysiwyg_restore_imported_preview()
         WYSIWYG_RUNTIME.master_snapshot = None
         store.wysiwyg_bg = None
-        store.wysiwyg_bg_runtime = None
         store.wysiwyg_bg_source = None
         store.wysiwyg_scene_with = None
         store.wysiwyg_confirm_save = None
@@ -4410,7 +4072,6 @@ transform wysiwyg_blink_motion(strength=1.0):
     def wysiwyg_clear_editor_state():
         WYSIWYG_RUNTIME.master_snapshot = None
         store.wysiwyg_bg = None
-        store.wysiwyg_bg_runtime = None
         store.wysiwyg_bg_source = None
         store.wysiwyg_scene_with = None
         store.wysiwyg_confirm_save = None
@@ -4422,14 +4083,7 @@ transform wysiwyg_blink_motion(strength=1.0):
         store.wysiwyg_undo_stack = []
         store.wysiwyg_transform_memory = {}
         store.wysiwyg_saved_runtime = False
-        store.wysiwyg_show_code = False
-        store.wysiwyg_code = ""
         store.wysiwyg_status = ""
-        store.wysiwyg_rotation_input = ""
-        store.wysiwyg_rotation_input_tag = None
-        store.wysiwyg_pos_input_x = ""
-        store.wysiwyg_pos_input_y = ""
-        store.wysiwyg_pos_input_tag = None
         store.wysiwyg_char_page = "main"
 
     def wysiwyg_toggle():
@@ -4457,31 +4111,11 @@ transform wysiwyg_blink_motion(strength=1.0):
         store.wysiwyg_active = not store.wysiwyg_active
         renpy.restart_interaction()
 
-    def wysiwyg_build_code():
-        lines = ["# Generated by WYSIWYG Scene Editor " + WYSIWYG_VERSION]
-        if store.wysiwyg_bg:
-            lines.append(wysiwyg_scene_line())
-        for char in store.wysiwyg_chars:
-            if char.get("locked"):
-                lines.append("# " + str(char.get("tag")) + ": locked (" + str(char.get("locked")) + ") - source line is never rewritten")
-            elif char.get("pending_hide"):
-                lines.append("hide " + str(char.get("tag")) + "  # inserted before the current statement")
-            else:
-                lines.append(wysiwyg_position_line_for_char(char))
-        scene_with = store.wysiwyg_scene_with
-        if wysiwyg_scene_with_dirty(scene_with):
-            lines.append("with " + str(scene_with.get("expr")) + "  # rewrites " + str(scene_with.get("file")) + ":" + str(scene_with.get("line")))
-        if len(lines) == 1:
-            lines.append("# Nothing imported yet. Click Import Scene first.")
-        return "\n".join(lines)
-
     def wysiwyg_toggle_code_panel():
         if store.wysiwyg_panel == "code":
             store.wysiwyg_panel = "characters"
             renpy.restart_interaction()
             return
-        store.wysiwyg_code = wysiwyg_build_code()
-        store.wysiwyg_show_code = True
         store.wysiwyg_panel = "code"
         renpy.restart_interaction()
 
@@ -4558,11 +4192,6 @@ init 10:
     style wysiwyg_value_text:
         color "#ffd28a"
         bold True
-
-    style wysiwyg_guide_text is wysiwyg_small_text
-    style wysiwyg_guide_text:
-        color "#ffffff"
-        outlines [(1, "#000000cc", 0, 0)]
 
     style wysiwyg_button_text is empty
     style wysiwyg_button_text:
