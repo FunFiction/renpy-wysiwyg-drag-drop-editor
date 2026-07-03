@@ -166,6 +166,12 @@ init -2 python:
         store.wysiwyg_status = text
         renpy.restart_interaction()
 
+    def wysiwyg_mark_runtime_dirty():
+        # The standard tail of every mutation handler: the scene now
+        # differs from the last save, and the UI must reflect it.
+        store.wysiwyg_saved_runtime = False
+        renpy.restart_interaction()
+
     def wysiwyg_source_path(filename):
         if not filename or not filename.startswith("game/"):
             return None
@@ -568,20 +574,7 @@ init -2 python:
         # so both round identically and the preview is pixel-equal to the
         # game render (a fractional rotated width otherwise causes a 1px jump
         # because negative inner offsets round differently than positive ones).
-        img_w = wysiwyg_float(char.get("img_w", char.get("original_w", 400.0)), 400.0)
-        img_h = wysiwyg_float(char.get("img_h", char.get("original_h", 800.0)), 800.0)
-        w = img_w * abs(wysiwyg_float(char.get("xzoom", 1.0), 1.0))
-        h = img_h * abs(wysiwyg_float(char.get("yzoom", 1.0), 1.0))
-        rot = wysiwyg_float(char.get("rotate", 0.0), 0.0)
-        if abs(rot) > 0.01:
-            # Ren'Py rotates with rotate_pad=True by default: the rotated
-            # render is padded to a hypot(w,h) square regardless of angle.
-            # The drag container must match that exact size, otherwise the
-            # inner blit offset goes negative and rounds differently than the
-            # live master-layer blit, shifting the preview by 1px.
-            bw = bh = math.hypot(w, h)
-        else:
-            bw, bh = w, h
+        bw, bh = wysiwyg_render_size(char)
         bw = int(math.ceil(bw))
         bh = int(math.ceil(bh))
         if bw % 2:
@@ -704,8 +697,7 @@ init -2 python:
             wysiwyg_update_char_size(char)
         store.wysiwyg_transform_memory[tag + ":" + key] = value
         store.wysiwyg_selected_tag = tag
-        store.wysiwyg_saved_runtime = False
-        renpy.restart_interaction()
+        wysiwyg_mark_runtime_dirty()
 
     def wysiwyg_flip_char(tag, key):
         char = wysiwyg_find_char(tag)
@@ -720,8 +712,7 @@ init -2 python:
         wysiwyg_update_char_size(char)
         store.wysiwyg_transform_memory[tag + ":" + key] = char[key]
         store.wysiwyg_selected_tag = tag
-        store.wysiwyg_saved_runtime = False
-        renpy.restart_interaction()
+        wysiwyg_mark_runtime_dirty()
 
     def wysiwyg_ensure_color_filter_state(char):
         if not char:
@@ -756,8 +747,7 @@ init -2 python:
             return
         char[key] = not bool(char.get(key, False))
         store.wysiwyg_selected_tag = tag
-        store.wysiwyg_saved_runtime = False
-        renpy.restart_interaction()
+        wysiwyg_mark_runtime_dirty()
 
     def wysiwyg_char_filter_value(char, key, default, use_original=False):
         if use_original:
@@ -1009,8 +999,7 @@ init -2 python:
         char["filter_hue"] = wysiwyg_clamp(wysiwyg_float(char.get("filter_hue", 0.0), 0.0), -180.0, 180.0)
         char["filter_invert"] = wysiwyg_clamp(wysiwyg_float(char.get("filter_invert", 0.0), 0.0), 0.0, 1.0)
         store.wysiwyg_selected_tag = tag
-        store.wysiwyg_saved_runtime = False
-        renpy.restart_interaction()
+        wysiwyg_mark_runtime_dirty()
 
     def wysiwyg_on_motion_fx_change(tag):
         char = wysiwyg_find_char(tag)
@@ -1020,8 +1009,7 @@ init -2 python:
         char["motion_fx"] = str(char.get("motion_fx", "none") or "none").strip().lower()
         char["motion_fx_strength"] = wysiwyg_clamp(wysiwyg_float(char.get("motion_fx_strength", 1.0), 1.0), 0.0, 2.0)
         store.wysiwyg_selected_tag = tag
-        store.wysiwyg_saved_runtime = False
-        renpy.restart_interaction()
+        wysiwyg_mark_runtime_dirty()
 
     def wysiwyg_reset_selected_color_filters_to_defaults():
         char = wysiwyg_find_char(store.wysiwyg_selected_tag)
@@ -1046,8 +1034,7 @@ init -2 python:
         wysiwyg_push_undo(char)
         char[key] = defaults[key]
         store.wysiwyg_selected_tag = tag
-        store.wysiwyg_saved_runtime = False
-        renpy.restart_interaction()
+        wysiwyg_mark_runtime_dirty()
 
     def wysiwyg_set_motion_fx(tag, effect):
         char = wysiwyg_find_char(tag)
@@ -1078,8 +1065,7 @@ init -2 python:
         wysiwyg_push_undo(char)
         char["motion_fx"] = "none"
         char["motion_fx_strength"] = 1.0
-        store.wysiwyg_saved_runtime = False
-        renpy.restart_interaction()
+        wysiwyg_mark_runtime_dirty()
         wysiwyg_set_status("Motion FX reset to defaults.")
 
     def wysiwyg_drag_transform_slider(tag, key):
@@ -1108,13 +1094,12 @@ init -2 python:
 
         
         store.wysiwyg_selected_tag = tag
-        store.wysiwyg_saved_runtime = False
-        renpy.restart_interaction()
+        wysiwyg_mark_runtime_dirty()
 
-    def wysiwyg_release_transform_slider(tag, key):
-        char = wysiwyg_find_char(tag)
-        if not char:
-            return
+    def wysiwyg_snap_char_transform(char):
+        # Rounds the transform values to what the writer would emit and
+        # recenters x/y on the rounded pixel center, so the preview and
+        # the written line agree exactly.
         if "xzoom" in char:
             char["xzoom"] = round(wysiwyg_float(char["xzoom"], 1.0), 3)
         if "yzoom" in char:
@@ -1134,6 +1119,12 @@ init -2 python:
         char["parsed_center_y"] = cy
         char["anchor_x"] = char["x"]
         char["anchor_y"] = char["y"]
+
+    def wysiwyg_release_transform_slider(tag, key):
+        char = wysiwyg_find_char(tag)
+        if not char:
+            return
+        wysiwyg_snap_char_transform(char)
 
         mem_key = tag + ":" + key
         current = wysiwyg_float(char.get(key, 0.0), 0.0)
@@ -1189,41 +1180,39 @@ init -2 python:
                 store.wysiwyg_saved_runtime = False
         renpy.restart_interaction()
 
+    def wysiwyg_apply_selected_transform(rotate, xzoom, yzoom, alpha, status):
+        # Shared body of the two transform resets: the callers differ only
+        # in the values they assign and the status they report.
+        char = wysiwyg_find_char(store.wysiwyg_selected_tag)
+        if not char:
+            wysiwyg_set_status("No selected character to reset.")
+            return
+        wysiwyg_push_undo(char)
+        char["rotate"] = rotate
+        char["xzoom"] = xzoom
+        char["yzoom"] = yzoom
+        char["alpha"] = alpha
+        wysiwyg_update_char_size(char)
+        for transform_key in ("rotate", "xzoom", "yzoom", "alpha"):
+            store.wysiwyg_transform_memory[char.get("tag") + ":" + transform_key] = char[transform_key]
+        store.wysiwyg_saved_runtime = False
+        wysiwyg_set_status(status)
+
     def wysiwyg_reset_selected_transform():
         char = wysiwyg_find_char(store.wysiwyg_selected_tag)
         if not char:
             wysiwyg_set_status("No selected character to reset.")
             return
-        wysiwyg_push_undo(char)
-        char["rotate"] = wysiwyg_float(char.get("original_rotate", 0.0), 0.0)
-        char["xzoom"] = wysiwyg_float(char.get("original_xzoom", 1.0), 1.0)
-        char["yzoom"] = wysiwyg_float(char.get("original_yzoom", 1.0), 1.0)
-        char["alpha"] = wysiwyg_float(char.get("original_alpha", 1.0), 1.0)
-        wysiwyg_update_char_size(char)
-        store.wysiwyg_transform_memory[char.get("tag") + ":rotate"] = char["rotate"]
-        store.wysiwyg_transform_memory[char.get("tag") + ":xzoom"] = char["xzoom"]
-        store.wysiwyg_transform_memory[char.get("tag") + ":yzoom"] = char["yzoom"]
-        store.wysiwyg_transform_memory[char.get("tag") + ":alpha"] = char["alpha"]
-        store.wysiwyg_saved_runtime = False
-        wysiwyg_set_status("Reset selected character transform.")
+        wysiwyg_apply_selected_transform(
+            wysiwyg_float(char.get("original_rotate", 0.0), 0.0),
+            wysiwyg_float(char.get("original_xzoom", 1.0), 1.0),
+            wysiwyg_float(char.get("original_yzoom", 1.0), 1.0),
+            wysiwyg_float(char.get("original_alpha", 1.0), 1.0),
+            "Reset selected character transform.")
 
     def wysiwyg_reset_selected_transform_to_defaults():
-        char = wysiwyg_find_char(store.wysiwyg_selected_tag)
-        if not char:
-            wysiwyg_set_status("No selected character to reset.")
-            return
-        wysiwyg_push_undo(char)
-        char["rotate"] = 0.0
-        char["xzoom"] = 1.0
-        char["yzoom"] = 1.0
-        char["alpha"] = 1.0
-        wysiwyg_update_char_size(char)
-        store.wysiwyg_transform_memory[char.get("tag") + ":rotate"] = 0.0
-        store.wysiwyg_transform_memory[char.get("tag") + ":xzoom"] = 1.0
-        store.wysiwyg_transform_memory[char.get("tag") + ":yzoom"] = 1.0
-        store.wysiwyg_transform_memory[char.get("tag") + ":alpha"] = 1.0
-        store.wysiwyg_saved_runtime = False
-        wysiwyg_set_status("Reset selected character transform to defaults.")
+        wysiwyg_apply_selected_transform(0.0, 1.0, 1.0, 1.0,
+            "Reset selected character transform to defaults.")
 
     def wysiwyg_x_position_targets_for_char(char):
         screen_w = wysiwyg_screen_w()
@@ -3286,25 +3275,7 @@ transform wysiwyg_blink_motion(strength=1.0):
         written = []
 
         for char in store.wysiwyg_chars:
-            if "xzoom" in char:
-                char["xzoom"] = round(wysiwyg_float(char["xzoom"], 1.0), 3)
-            if "yzoom" in char:
-                char["yzoom"] = round(wysiwyg_float(char["yzoom"], 1.0), 3)
-            if "rotate" in char:
-                char["rotate"] = round(wysiwyg_float(char["rotate"], 0.0), 1)
-            if "alpha" in char:
-                char["alpha"] = round(wysiwyg_float(char["alpha"], 1.0), 3)
-            wysiwyg_update_char_size(char)
-            w = wysiwyg_float(char.get("w", 0.0), 0.0)
-            h = wysiwyg_float(char.get("h", 0.0), 0.0)
-            cx = round(wysiwyg_float(char.get("x", 0.0), 0.0) + w / 2.0)
-            cy = round(wysiwyg_float(char.get("y", 0.0), 0.0) + h / 2.0)
-            char["x"] = cx - w / 2.0
-            char["y"] = cy - h / 2.0
-            char["parsed_center_x"] = cx
-            char["parsed_center_y"] = cy
-            char["anchor_x"] = char["x"]
-            char["anchor_y"] = char["y"]
+            wysiwyg_snap_char_transform(char)
 
         # The background is never editable in the editor, so its scene line
         # is never rewritten (rewriting it would strip the game's at-list).
@@ -3861,8 +3832,7 @@ transform wysiwyg_blink_motion(strength=1.0):
         char["parsed_center_y"] = round(char["y"] + h / 2.0)
         char["parsed_x"] = True
         char["parsed_y"] = True
-        store.wysiwyg_saved_runtime = False
-        renpy.restart_interaction()
+        wysiwyg_mark_runtime_dirty()
 
     def wysiwyg_adjust_zorder(tag, delta):
         char = wysiwyg_find_char(tag)
@@ -3872,8 +3842,7 @@ transform wysiwyg_blink_motion(strength=1.0):
         current = int(current) if current is not None else 0
         char["zorder"] = current + int(delta)
         store.wysiwyg_selected_tag = tag
-        store.wysiwyg_saved_runtime = False
-        renpy.restart_interaction()
+        wysiwyg_mark_runtime_dirty()
 
     def wysiwyg_toggle_preview_hidden(tag):
         char = wysiwyg_find_char(tag)
