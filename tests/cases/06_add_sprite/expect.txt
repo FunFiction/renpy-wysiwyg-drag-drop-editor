@@ -7,13 +7,46 @@ NOMATCH EXC
 MATCH BROWSER: 2bad name!\(BLOCKED\); bigguy; hero happy; buddy
 NOMATCH Bigguy
 MATCH OUTSIDE-IMAGES-LEAK: \[\]
+# grouping: all four fixture names have unique prefixes -> one "*" group;
+# synthetic rows check the shared-prefix branch; the filter is
+# case-insensitive and matches the file path too (buddy sits in images/side/)
+MATCH GROUPS: \*:4
+MATCH GROUPS2: chloe:chloe_a,chloe_b; \*:solo
+MATCH FILTER: buddy
 NOMATCH outsider
 NOMATCH rootfile
 MATCH COLLISION: Tag 'existing' is already tracked
 MATCH DISCARD-LEAK: \[\]
 MATCH SAVE: Saved 2 changed line\(s\), verified
 MATCH TL-GUARD: Cannot add while playing a translation
-# inserted in add order, right before the paused statement
+# heuristic sources fall back to the paused statement; trusted carryover
+# sources anchor the with-scene insert
+MATCH ANCHOR-HEURISTIC: '\$ selftest\(\)'
+MATCH ANCHOR-CARRYOVER: 'show existing'
+MATCH WITHKEY: TrueTrueTrueTrue
+MATCH WITH-SAVE: Saved 1 changed line\(s\), verified
+# same-position re-import with an empty line log carries sources over
+# (existing survives via the editor's own session log, hence linelog)
+MATCH CARRYOVER: bigguy=carryover;buddy=carryover;existing=linelog;hero=carryover
+MATCH CARRYOVER-STATUS: Imported 4 character\(s\)\.
+NOMATCH CARRYOVER-STATUS: .*uncertain
+# a dirty character with an uncertain source is gated behind confirmation
+MATCH CONFIRM-GATE: \['buddy'\]
+MATCH CONFIRM-SAVE: Saved 1 changed line\(s\), verified
+# the standalone `with dissolve  # reveal` is detected as the scene
+# reveal with the comment stripped from the expression; a
+# preset-equivalent value never rewrites it; a custom value does, and
+# the rewrite keeps the author's trailing comment
+MATCH SCENE-WITH: u?'dissolve'
+MATCH SCENE-WITH-NOOP: u?'dissolve'
+MATCH SCENE-WITH-SAVE: Saved 1 changed line\(s\), verified
+FILEMATCH script.rpy (?m)^    with Dissolve\(0\.75\)  # reveal$
+FILENOMATCH script.rpy (?m)^    with dissolve
+FILEMATCH script.rpy show buddy at Transform\(xpos=954, ypos=300
+# inserted in add order, right above the earliest tracked show, so the
+# new sprites are revealed by the same transition as the rest of the scene
 FILEMATCH script.rpy show hero happy at Transform\(xpos=204, ypos=300
-FILEMATCH script.rpy show buddy at Transform\(xpos=904, ypos=300
-FILEMATCH script.rpy (?s)show hero happy.*show buddy.*\$ selftest\(\)
+FILEMATCH script.rpy (?s)show hero happy.*show buddy.*show existing.*\$ selftest\(\)
+# ...but a sprite with its own `with` preset lands at the paused statement
+FILEMATCH script.rpy (?m)^    show bigguy at Transform\(.*\) with Dissolve\(0\.5\)\n    \$ selftest\(\)$
+FILEMATCH script.rpy (?s)show existing.*show bigguy

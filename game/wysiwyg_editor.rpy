@@ -63,6 +63,13 @@ default wysiwyg_pos_input_y = ""
 default wysiwyg_pos_input_tag = None
 default wysiwyg_edit_field = None
 default wysiwyg_edit_buffer = ""
+default wysiwyg_browser_filter = ""
+default wysiwyg_browser_hover = None
+default wysiwyg_browser_open_groups = set()
+default wysiwyg_saved_position = None
+default wysiwyg_confirm_save = None
+default wysiwyg_confirm_close = None
+default wysiwyg_scene_with = None
 
 init -2 python:
     import os
@@ -504,6 +511,66 @@ init -2 python:
         obj = getattr(store, tag, None)
         name = getattr(obj, "name", None) or getattr(obj, "who", None)
         return name or tag
+
+    def wysiwyg_ellipsize(text, limit):
+        # Single home of the truncation math, so labels and expressions
+        # can never ellipsize differently.
+        text = str(text)
+        if len(text) > limit:
+            text = text[:max(1, limit - 1)] + u"…"
+        return text
+
+    def wysiwyg_short_label(tag, limit=16):
+        # Row labels live in a fixed-width button; anything longer than the
+        # button gets ellipsized here (the full name stays in the tooltip
+        # and in the selected-character header).
+        return wysiwyg_ellipsize(wysiwyg_char_label(tag), limit)
+
+    def wysiwyg_short_expr(expr, limit=24):
+        # Long author-side expressions (custom transitions and the like)
+        # would stretch a button past the panel edge; the full text goes
+        # into the tooltip instead.
+        return wysiwyg_ellipsize(expr or "", limit)
+
+    def wysiwyg_comment_index(text):
+        # Index of the trailing comment's '#' in a logical line, or None.
+        # Quote-aware: a '#' inside a string literal is not a comment.
+        # Single home of the scan - the stripper below and the comment
+        # extractor both derive their result from this one loop.
+        quote = None
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            if quote:
+                if ch == "\\":
+                    i += 2
+                    continue
+                if ch == quote:
+                    quote = None
+            elif ch in "\"'`":
+                quote = ch
+            elif ch == "#":
+                return i
+            i += 1
+        return None
+
+    def wysiwyg_strip_line_comment(text):
+        # The logical line without its trailing "# comment". Used wherever
+        # a source line is parsed as an EXPRESSION - the comment must not
+        # leak into the parsed value.
+        text = str(text or "")
+        idx = wysiwyg_comment_index(text)
+        return text if idx is None else text[:idx]
+
+    def wysiwyg_wrap_path(value):
+        # Paths, image names and code lines are long single "words" - with
+        # no spaces the text system cannot wrap them and they poke out of
+        # the panel. A zero-width space (U+200B, rendered at zero width by
+        # Ren'Py with any font) after each separator gives every one of
+        # them a legal break point without changing what the user sees.
+        s = wysiwyg_ui_text(value)
+        zwsp = chr(0x200B)
+        return re.sub(u"([/\\\\_.,()\\-])", u"\\1" + zwsp, s)
 
     def wysiwyg_char_color(tag):
         obj = getattr(store, tag, None)
@@ -1610,11 +1677,20 @@ init -2 python:
         expression = None
         as_tag = None
         at_list_exprs = []
+        onlayer = None
         imspec = getattr(best_node, "imspec", None)
         if imspec:
             _, expression, _, node_at_list, _ = wysiwyg_imspec_parts(imspec)
             at_list_exprs = [str(a) for a in (node_at_list or [])]
             as_tag = wysiwyg_imspec_explicit_tag(imspec)
+            # An EXPLICIT `onlayer` clause (raw imspec layer is None when
+            # absent) must survive the rewrite: dropping it would move the
+            # sprite to its default layer on the next execution.
+            if len(imspec) >= 6:
+                onlayer = imspec[4]
+            elif len(imspec) == 3:
+                onlayer = imspec[2]
+            onlayer = str(onlayer) if onlayer else None
             if len(imspec) >= 6 and imspec[5] is not None:
                 try:
                     zorder_val = int(str(imspec[5]))
@@ -1636,6 +1712,8 @@ init -2 python:
             "expression": str(expression) if expression else None,
             "as_tag": str(as_tag) if as_tag else None,
             "with_expr": with_expr,
+            "original_with_expr": with_expr,
+            "onlayer": onlayer,
             "at_list_exprs": at_list_exprs,
             "has_atl": getattr(best_node, "atl", None) is not None,
             "source_confidence": source_confidence,
@@ -1699,6 +1777,33 @@ init -2 python:
     def wysiwyg_import_scene():
         had_existing_import = bool(store.wysiwyg_chars or store.wysiwyg_bg)
         dropped_pending = len([c for c in store.wysiwyg_chars if c.get("pending_insert")])
+        dropped_hides = len([c for c in store.wysiwyg_chars if c.get("pending_hide")])
+
+        # Carryover: an autoreload (triggered by our own save) wipes the
+        # engine's line log, so the NEXT import would degrade every
+        # character to an uncertain AST guess. But when the game is still
+        # paused on the exact statement recorded at the last successful
+        # save, the previous entries' source lines are known-good - reuse
+        # them instead of guessing. Only same-position imports qualify:
+        # after the player moves on, old lines may describe other scenes.
+        prev_by_tag = {}
+        saved_pos = store.wysiwyg_saved_position
+        if saved_pos and store.wysiwyg_chars:
+            saved_lines = saved_pos[1] if isinstance(saved_pos[1], (list, tuple, set)) else [saved_pos[1]]
+            cur_f, cur_l = wysiwyg_get_current_position()
+            if cur_f and str(cur_f).replace("\\", "/") == str(saved_pos[0]) and int(cur_l or 0) in [int(l) for l in saved_lines]:
+                for c in store.wysiwyg_chars:
+                    if c.get("pending_insert") or c.get("locked"):
+                        continue
+                    if c.get("source_confidence") not in ("linelog", "linelog-dedup", "carryover"):
+                        # Never promote a heuristic guess to trusted: the
+                        # previous entry itself was never validated by
+                        # execution, so carrying it forward would disarm
+                        # the uncertain-save confirmation for a line that
+                        # may belong to an untaken branch.
+                        continue
+                    if c.get("source_file") and c.get("source_line"):
+                        prev_by_tag[c.get("tag")] = c
 
         if store.wysiwyg_chars or store.wysiwyg_bg:
             wysiwyg_restore_imported_preview()
@@ -1707,6 +1812,7 @@ init -2 python:
         store.wysiwyg_bg = None
         store.wysiwyg_bg_runtime = None
         store.wysiwyg_bg_source = None
+        store.wysiwyg_scene_with = None
         store.wysiwyg_chars = []
         store.wysiwyg_transform_memory = {}
         store.wysiwyg_rotation_input_tag = None
@@ -1766,6 +1872,30 @@ init -2 python:
                     "behind": [],
                     "unsaved": True,
                 }
+            data = by_tag[tag]
+            prev = prev_by_tag.get(tag)
+            if (prev is not None
+                    and data.get("source_confidence") != "linelog"
+                    and str(prev.get("image")) == str(data.get("image") or image_name)):
+                prev_file = str(prev.get("source_file", "")).replace("\\", "/")
+                prev_line = int(prev.get("source_line") or 0)
+                if re.match(r"show(\s|:|$)", str(wysiwyg_source_line_text(prev_file, prev_line) or "").strip()):
+                    # The previous entry described exactly this statement, so
+                    # its statement-level fields are more trustworthy than
+                    # whatever the AST guess dug up. Unsaved tweaks were
+                    # discarded above, so originals are the file truth.
+                    data["source_file"] = prev_file
+                    data["source_line"] = prev_line
+                    data["source_confidence"] = "carryover"
+                    carried_with = prev.get("original_with_expr", prev.get("with_expr"))
+                    data["with_expr"] = carried_with
+                    data["original_with_expr"] = carried_with
+                    for key in ("expression", "as_tag", "at_list_exprs", "has_atl",
+                                "zorder", "zorder_raw", "behind", "onlayer"):
+                        if key in prev:
+                            data[key] = prev[key]
+                    data["original_zorder"] = prev.get("original_zorder", prev.get("zorder"))
+                    data["zorder"] = data["original_zorder"]
 
         chars = []
         for tag, data in sorted(by_tag.items()):
@@ -1919,9 +2049,10 @@ init -2 python:
 
         store.wysiwyg_chars = chars
         store.wysiwyg_selected_tag = editable_chars[0].get("tag") if editable_chars else None
+        store.wysiwyg_scene_with = wysiwyg_detect_scene_with()
 
         locked_count = len(chars) - len(editable_chars)
-        uncertain = len([c for c in editable_chars if c.get("source_confidence") != "linelog"])
+        uncertain = len([c for c in editable_chars if c.get("source_confidence") not in ("linelog", "carryover")])
         if imported or bg_seen:
             if locked_count:
                 message = "Imported " + str(len(editable_chars)) + " editable + " + str(locked_count) + " locked character(s)."
@@ -1931,6 +2062,8 @@ init -2 python:
                 message += " " + str(uncertain) + " with uncertain source line - verify in Show Code before saving."
             if dropped_pending:
                 message += " " + str(dropped_pending) + " added-but-unsaved sprite(s) were discarded."
+            if dropped_hides:
+                message += " " + str(dropped_hides) + " unsaved removal mark(s) were discarded."
             wysiwyg_set_status(message)
         else:
             wysiwyg_set_status("No editable scene/show lines found. Advance the scene, then press Import Scene.")
@@ -1992,13 +2125,76 @@ init -2 python:
                 "file": str(fn),
                 "name": name,
                 "problem": problem,
+                # Display strings are precomputed here: the row screens
+                # re-render on every hover/keystroke, and re-wrapping
+                # hundreds of identical paths there is wasted work.
+                "name_wrapped": wysiwyg_wrap_path(name),
+                "file_wrapped": wysiwyg_wrap_path(fn),
+                "problem_line": (wysiwyg_wrap_path("cannot add: " + str(problem) + "  [" + str(fn) + "]") if problem else ""),
             })
         return rows
 
+    # Group key for browser entries whose name prefix is unique. "*" can
+    # never collide with a real prefix: image tags must match
+    # [A-Za-z_][A-Za-z0-9_]*, so no file groups under a literal "*".
+    WYSIWYG_BROWSER_UNGROUPED = "*"
+
+    def wysiwyg_browser_groups(rows, filter_text):
+        # Rows for the add-sprite browser, as a list of (prefix, rows)
+        # pairs. With a filter active grouping is bypassed: one flat
+        # pseudo-group holding every match, so the user never has to
+        # expand groups while searching. Without a filter, rows group by
+        # the name's first "_"-separated word; prefixes owning a single
+        # file all pool into a trailing "*" group, otherwise the list
+        # would be mostly one-entry headers.
+        rows = rows or []
+        filt = str(filter_text or "").strip().lower()
+        if filt:
+            matched = [r for r in rows
+                       if filt in str(r.get("name", "")).lower()
+                       or filt in str(r.get("file", "")).lower()]
+            return [(WYSIWYG_BROWSER_UNGROUPED, matched)]
+        buckets = {}
+        for r in rows:
+            prefix = str(r.get("name", "")).partition("_")[0]
+            buckets.setdefault(prefix, []).append(r)
+        groups = []
+        singles = []
+        for prefix in sorted(buckets):
+            if len(buckets[prefix]) > 1:
+                groups.append((prefix, buckets[prefix]))
+            else:
+                singles.extend(buckets[prefix])
+        if singles:
+            groups.append((WYSIWYG_BROWSER_UNGROUPED, singles))
+        return groups
+
+    def wysiwyg_toggle_browser_group(prefix):
+        open_groups = store.wysiwyg_browser_open_groups
+        if prefix in open_groups:
+            open_groups.discard(prefix)
+        else:
+            open_groups.add(prefix)
+        renpy.restart_interaction()
+
+    def wysiwyg_select_char(tag):
+        # Selecting another character cancels any half-typed edit field:
+        # committing a buffer typed for one character against a freshly
+        # selected one would teleport the wrong sprite.
+        if store.wysiwyg_selected_tag != tag:
+            wysiwyg_clear_edit_field()
+        store.wysiwyg_selected_tag = tag
+        renpy.restart_interaction()
+
     def wysiwyg_toggle_image_browser():
+        store.wysiwyg_browser_hover = None
+        # The browser's search input must be the only live input on the
+        # screen - a lingering edit field would fight it for keystrokes.
+        wysiwyg_clear_edit_field()
         if store.wysiwyg_char_page == "add":
             store.wysiwyg_char_page = "main"
         else:
+            store.wysiwyg_browser_filter = ""
             WYSIWYG_RUNTIME.image_browser = wysiwyg_list_image_files()
             store.wysiwyg_char_page = "add"
         renpy.restart_interaction()
@@ -2109,6 +2305,173 @@ init -2 python:
         store.wysiwyg_char_page = "main"
         wysiwyg_set_status("Added '" + image_name + "' - drag it into place; Save Changes writes the new show line.")
 
+    # --- Removing characters ---------------------------------------------------
+    # A pending (added but unsaved) sprite is discarded on the spot - it
+    # never touched any file. A tracked character is only MARKED: Save
+    # Changes then inserts a `hide TAG` line before the statement the game
+    # is paused on. The original show line and the image definitions are
+    # never touched, so the character still appears as before and simply
+    # leaves the scene from this point of the script on.
+    def wysiwyg_remove_character(tag):
+        char = wysiwyg_find_char(tag)
+        if not char:
+            return
+        if char.get("locked"):
+            wysiwyg_set_status("Locked characters cannot be removed.")
+            return
+        if char.get("pending_insert"):
+            store.wysiwyg_chars.remove(char)
+            for key in list(store.wysiwyg_transform_memory.keys()):
+                if str(key).startswith(str(tag) + ":"):
+                    del store.wysiwyg_transform_memory[key]
+            if store.wysiwyg_selected_tag == tag:
+                store.wysiwyg_selected_tag = None
+            wysiwyg_set_status("Discarded unsaved sprite '" + str(tag) + "' - no file was touched.")
+        else:
+            char["pending_hide"] = True
+            store.wysiwyg_saved_runtime = False
+            if store.wysiwyg_selected_tag == tag:
+                store.wysiwyg_selected_tag = None
+            wysiwyg_set_status("'" + str(tag) + "' marked for removal - Save Changes writes a hide line.")
+        renpy.restart_interaction()
+
+    def wysiwyg_unremove_character(tag):
+        char = wysiwyg_find_char(tag)
+        if char and char.get("pending_hide"):
+            char["pending_hide"] = False
+            wysiwyg_set_status("Removal of '" + str(tag) + "' cancelled.")
+            renpy.restart_interaction()
+
+    # Presets for the `with` clause written onto the character's show line.
+    # Editing it only reaches a `with` that sits ON the show line itself; a
+    # standalone `with dissolve` statement on its own line is a different
+    # statement the editor never rewrites (adding a preset next to one
+    # stacks a second transition).
+    WYSIWYG_WITH_PRESETS = [
+        ("None", None),
+        ("0.25s", "Dissolve(0.25)"),
+        ("0.5s", "Dissolve(0.5)"),
+        ("1s", "Dissolve(1.0)"),
+        ("fade", "fade"),
+    ]
+
+    def wysiwyg_with_preset_key(expr):
+        # Canonical form of a `with` expression, so equivalent spellings
+        # light up the same preset button: the engine's bare `dissolve` IS
+        # Dissolve(0.5), and numeric literals may vary (.25 vs 0.25).
+        # Anything else - the author's own transitions - keys as raw text.
+        s = str(expr or "").strip()
+        if not s or s == "None":
+            return None
+        if s == "dissolve":
+            return ("dissolve", 0.5)
+        m = re.match(r"^Dissolve\(\s*([0-9]*\.?[0-9]+)\s*\)$", s)
+        if m:
+            return ("dissolve", float(m.group(1)))
+        if s == "fade":
+            return ("fade",)
+        return ("raw", s)
+
+    def wysiwyg_detect_scene_with():
+        # The standalone `with` STATEMENT that reveals the current scene:
+        # the first With node after the scene/earliest-show line and at or
+        # before the paused statement, in the paused file. It is shared by
+        # everything shown with it - the editor exposes it as one
+        # scene-level value, not per character. A `with` living on a show
+        # line is that line's own clause and is excluded here (its line
+        # text starts with `show`, not `with`).
+        cur_f, cur_l = wysiwyg_get_current_position()
+        if not cur_f or not cur_l:
+            return None
+        cur_f = str(cur_f).replace("\\", "/")
+        cur_l = int(cur_l)
+        lower = None
+        bg_src = store.wysiwyg_bg_source or {}
+        if str(bg_src.get("file", "") or "").replace("\\", "/") == cur_f:
+            lower = int(bg_src.get("line") or 0) or None
+        if lower is None:
+            show_lines = [int(c.get("source_line") or 0) for c in store.wysiwyg_chars
+                          if not c.get("pending_insert")
+                          and str(c.get("source_file", "")).replace("\\", "/") == cur_f
+                          and 0 < int(c.get("source_line") or 0) < cur_l]
+            lower = min(show_lines) if show_lines else None
+        if lower is None:
+            return None
+        # Control flow after `lower` ends the straight-line preamble the
+        # editor is willing to reason about. A `with` past a menu/if/jump
+        # may sit inside a branch the player never takes, and rewriting it
+        # would corrupt an unrelated transition - past the barrier nothing
+        # is offered. Within the preamble the LAST with wins: with e.g.
+        # `scene bg` / `with fade` / shows / `with dissolve`, the dissolve
+        # is the one that reveals the sprites, which is what the UI says.
+        barrier_types = tuple(t for t in (
+            getattr(renpy.ast, n, None)
+            for n in ("Menu", "If", "Jump", "Call", "Label", "While", "Return")
+        ) if t is not None)
+        barrier = cur_l + 1
+        for node in getattr(renpy.game.script, "all_stmts", []):
+            if not isinstance(node, barrier_types):
+                continue
+            node_file = str(getattr(node, "filename", "")).replace("\\", "/")
+            node_line = int(getattr(node, "linenumber", 0) or 0)
+            if node_file == cur_f and lower < node_line <= cur_l and node_line < barrier:
+                barrier = node_line
+        best = None
+        for node in getattr(renpy.game.script, "all_stmts", []):
+            if not isinstance(node, renpy.ast.With):
+                continue
+            node_file = str(getattr(node, "filename", "")).replace("\\", "/")
+            node_line = int(getattr(node, "linenumber", 0) or 0)
+            if node_file != cur_f or not (lower < node_line <= cur_l) or node_line >= barrier:
+                continue
+            # Comments must not leak into the expression: `with dissolve
+            # # note` would otherwise key as a "custom transition" and the
+            # equivalent preset would not light up.
+            text = wysiwyg_strip_line_comment(str(wysiwyg_source_line_text(node_file, node_line) or "")).strip()
+            match = re.match(r"^with\s+(.+?)\s*$", text)
+            if not match:
+                continue
+            if best is None or node_line > best[0]:
+                best = (node_line, match.group(1))
+        if best is None:
+            return None
+        return {"file": cur_f, "line": best[0], "expr": best[1], "original": best[1]}
+
+    def wysiwyg_set_scene_with(expr):
+        # Picking a preset supersedes a half-typed custom time: close the
+        # inline input instead of leaving it blinking next to the presets.
+        if store.wysiwyg_edit_field == "scenewithsec":
+            wysiwyg_clear_edit_field()
+        scene_with = store.wysiwyg_scene_with
+        if not scene_with:
+            return
+        expr = "None" if expr is None else str(expr)
+        if wysiwyg_with_preset_key(scene_with.get("expr")) == wysiwyg_with_preset_key(expr):
+            return
+        scene_with["expr"] = expr
+        store.wysiwyg_saved_runtime = False
+        wysiwyg_set_status("Scene reveal transition set to 'with " + expr + "' - Save Changes rewrites the with line (no live preview).")
+        renpy.restart_interaction()
+
+    def wysiwyg_set_with_expr(tag, expr):
+        if store.wysiwyg_edit_field == "withsec":
+            wysiwyg_clear_edit_field()
+        char = wysiwyg_find_char(tag)
+        if not char or char.get("locked"):
+            return
+        if wysiwyg_with_preset_key(char.get("with_expr")) == wysiwyg_with_preset_key(expr):
+            # Same transition, differently spelled (author's `dissolve` vs
+            # our Dissolve(0.5)): keep the original text so the line is not
+            # rewritten just to normalize it.
+            return
+        char["with_expr"] = expr
+        store.wysiwyg_saved_runtime = False
+        if expr:
+            wysiwyg_set_status("'" + str(tag) + "' will be shown with " + str(expr) + " - Save Changes writes it into the show line.")
+        else:
+            wysiwyg_set_status("'" + str(tag) + "' will be shown without a with transition.")
+        renpy.restart_interaction()
+
     def wysiwyg_scriptedit_insert(filename, line, code):
         # Inserts a brand-new statement before filename:line. Returns the
         # physical line delta (+1) for the caller's bookkeeping.
@@ -2129,7 +2492,80 @@ init -2 python:
             wysiwyg_end_ast_surgery(surgery)
         return 1
 
-    def wysiwyg_position_line_for_char(char):
+    def wysiwyg_added_sprite_target(base_file, base_line):
+        # Where a brand-new show line goes. Preferred: right above the
+        # earliest tracked show in the file the game is paused in, so the
+        # added sprite is revealed by the same `with` transition as the
+        # rest of the scene instead of popping in after it. Anything
+        # ambiguous falls back to the paused statement itself, which is
+        # always safe (that was the only behaviour before this helper).
+        candidate = None
+        for char in store.wysiwyg_chars:
+            if char.get("pending_insert") or char.get("locked"):
+                continue
+            if char.get("source_confidence") not in ("linelog", "linelog-dedup", "carryover"):
+                # A heuristic guess may point into an untaken menu branch;
+                # anchoring there would splice the new sprite into code the
+                # player never runs. Post-autoreload imports keep trust via
+                # carryover, so this rarely costs the with-scene insert.
+                continue
+            src_file = str(char.get("source_file", "")).replace("\\", "/")
+            try:
+                src_line = int(char.get("source_line") or 0)
+            except Exception:
+                continue
+            if src_file != base_file or not (0 < src_line < base_line):
+                continue
+            # Belt and braces: the remembered line must still literally
+            # hold a show statement.
+            if not re.match(r"show(\s|:|$)", str(wysiwyg_source_line_text(src_file, src_line) or "").strip()):
+                continue
+            if candidate is None or src_line < candidate:
+                candidate = src_line
+        if candidate is not None:
+            # Never land above the scene statement: the background must be
+            # up before the sprite shows.
+            bg_src = store.wysiwyg_bg_source or {}
+            bg_file = str(bg_src.get("file", "") or "").replace("\\", "/")
+            try:
+                bg_line = int(bg_src.get("line") or 0)
+            except Exception:
+                bg_line = 0
+            if bg_file == base_file and bg_line >= candidate:
+                candidate = None
+        if candidate is not None:
+            try:
+                renpy.scriptedit.ensure_loaded(base_file)
+                if renpy.scriptedit.lines.get((base_file, candidate)) is None:
+                    candidate = None
+            except Exception:
+                candidate = None
+        if candidate is not None:
+            return (base_file, candidate)
+        return (base_file, base_line)
+
+    def wysiwyg_hide_between(target_file, start_line, end_line, tag):
+        # True when a `hide TAG` statement sits in (start_line, end_line].
+        # Inserting a new show for that tag above it would create a sprite
+        # its own later hide immediately cancels on replay.
+        if end_line <= start_line:
+            return False
+        try:
+            renpy.scriptedit.ensure_loaded(target_file)
+        except Exception:
+            return False
+        pattern = re.compile(r"^hide\s+" + re.escape(str(tag)) + r"(\s|$)")
+        for line in range(start_line + 1, end_line + 1):
+            entry = renpy.scriptedit.lines.get((target_file, line))
+            if entry is not None and pattern.match(entry.text.strip()):
+                return True
+        return False
+
+    def wysiwyg_at_parts_for_char(char):
+        # The at-list the writer puts on the line, as a list of expression
+        # strings. Split out of the line builder so a save can refresh the
+        # character's `at_list_exprs` to match what was actually written -
+        # stale metadata would mis-classify the statement on re-import.
         rotate_val = wysiwyg_float(char.get("rotate", 0.0), 0.0)
         xzoom_val = wysiwyg_float(char.get("xzoom", 1.0), 1.0)
         yzoom_val = wysiwyg_float(char.get("yzoom", 1.0), 1.0)
@@ -2166,6 +2602,10 @@ init -2 python:
         motion_expr = wysiwyg_motion_fx_at_expression_for_char(char)
         if motion_expr:
             at_parts.append(motion_expr)
+        return at_parts
+
+    def wysiwyg_position_line_for_char(char):
+        at_parts = wysiwyg_at_parts_for_char(char)
         # `show expression`/`as alias` statements must round-trip: writing the
         # alias as if it were an image name produces a line that crashes the
         # game on its next execution ("Image '<alias>' not found").
@@ -2179,6 +2619,8 @@ init -2 python:
         behind = char.get("behind") or []
         if behind:
             line += " behind " + ", ".join([str(i) for i in behind])
+        if char.get("onlayer"):
+            line += " onlayer " + str(char.get("onlayer"))
         zorder_val = char.get("zorder")
         if zorder_val is not None:
             line += " zorder " + str(int(zorder_val))
@@ -2212,23 +2654,10 @@ init -2 python:
         # so a second save of the same line would silently drop it without
         # the quote-aware scan below.
         if entry.full_text.endswith("\n"):
-            text = entry.text
-            quote = None
-            i = 0
-            while i < len(text):
-                ch = text[i]
-                if quote:
-                    if ch == "\\":
-                        i += 2
-                        continue
-                    if ch == quote:
-                        quote = None
-                elif ch in "\"'`":
-                    quote = ch
-                elif ch == "#":
-                    return text[i:].rstrip()
-                i += 1
-            return ""
+            idx = wysiwyg_comment_index(entry.text)
+            if idx is None:
+                return ""
+            return entry.text[idx:].rstrip()
         try:
             with io.open(entry.filename, "r", encoding="utf-8") as handle:
                 data = handle.read()
@@ -2901,6 +3330,7 @@ init -2 python:
         char["original_filter_sepia"] = bool(char.get("filter_sepia", False))
         char["original_motion_fx"] = str(char.get("motion_fx", "none") or "none").strip().lower()
         char["original_zorder"] = char.get("zorder")
+        char["original_with_expr"] = char.get("with_expr")
         char["original_parsed_center_x"] = char.get("parsed_center_x", char.get("x", 0.0) + wysiwyg_float(char.get("w", 0.0), 0.0) / 2.0)
         char["original_parsed_center_y"] = char.get("parsed_center_y", char.get("y", 0.0) + wysiwyg_float(char.get("h", 0.0), 0.0) / 2.0)
 
@@ -2935,6 +3365,14 @@ init -2 python:
                     journal.append(("bg", bg_source, old))
                 bg_source["line"] = old + delta
 
+        scene_with = store.wysiwyg_scene_with
+        if scene_with and str(scene_with.get("file", "")).replace("\\", "/") == edited_file:
+            if hit(scene_with.get("line", 0)):
+                old = int(scene_with["line"])
+                if journal is not None:
+                    journal.append(("scenewith", scene_with, old))
+                scene_with["line"] = old + delta
+
         log = WYSIWYG_RUNTIME.exec_log
         for index, entry in enumerate(log):
             filename, line = entry
@@ -2949,6 +3387,8 @@ init -2 python:
                 if kind == "char":
                     ref["source_line"] = old
                 elif kind == "bg":
+                    ref["line"] = old
+                elif kind == "scenewith":
                     ref["line"] = old
                 elif kind == "log":
                     WYSIWYG_RUNTIME.exec_log[ref] = old
@@ -2985,7 +3425,37 @@ init -2 python:
             return True
         if char.get("zorder") != char.get("original_zorder"):
             return True
+        if wysiwyg_char_with_dirty(char):
+            return True
         return False
+
+    def wysiwyg_char_with_dirty(char):
+        # Shared by wysiwyg_char_dirty and the "Restore original" gate in
+        # the panel, so the button can never disagree with what a save
+        # counts as changed.
+        return str(char.get("with_expr") or "") != str(char.get("original_with_expr") or "")
+
+    def wysiwyg_char_save_kind(char):
+        # THE definition of "this character needs saving": None (nothing
+        # to write), "added", "removed" or "edited". The save loop, the
+        # uncertain-save gate and the close gate all branch on this one
+        # function, so they cannot drift apart when a new savable state
+        # is introduced.
+        if char.get("locked"):
+            return None
+        if char.get("pending_insert"):
+            return "added"
+        if char.get("pending_hide"):
+            return "removed"
+        if wysiwyg_char_dirty(char):
+            return "edited"
+        return None
+
+    def wysiwyg_scene_with_dirty(scene_with=None):
+        # THE definition of "the scene reveal needs saving" - shared by
+        # the save path, the gates and the code panel.
+        sw = store.wysiwyg_scene_with if scene_with is None else scene_with
+        return bool(sw) and str(sw.get("expr") or "") != str(sw.get("original") or "")
 
     def wysiwyg_validate_save_target(char):
         # Re-checks, immediately before writing, that the remembered source
@@ -3137,54 +3607,126 @@ transform wysiwyg_blink_motion(strength=1.0):
         batch_backups = {}
         shift_journals = {}
         pending_written = set()
+        hidden_written = []
         failed_now = set()
-        # Insert target for newly added sprites, fetched ONCE per save:
-        # add_to_ast_before repoints ctx.current at the inserted node, so
-        # asking for the current position again after the first insert would
-        # reverse the order of subsequently inserted lines.
-        pending_target = None
+        # Insert targets, fetched ONCE per save: add_to_ast_before repoints
+        # ctx.current at the inserted node, so asking for the current
+        # position again after the first insert would reverse the order of
+        # subsequently inserted lines. Two independent targets:
+        #   "add"  - new show lines; preferably right above the earliest
+        #            tracked show in the paused file, so the added sprite
+        #            joins the same `with` transition that reveals the rest
+        #            of the scene (fallback: the paused statement itself),
+        #   "hide" - hide lines; always the paused statement (a hide above
+        #            the character's own show would be a no-op).
+        # Each insert bumps BOTH targets when it lands at or above them, and
+        # every line-count-changing edit above them bumps them by its delta,
+        # so they stay valid as the file grows during the batch. Fetched
+        # lazily (not before the loop): an edit with delta != 0 processed
+        # before the first insert would leave eagerly-fetched targets stale,
+        # while ctx.current tracks such shifts on its own.
+        insert_targets = {"add": None, "hide": None, "base": None}
+
+        def _ensure_insert_targets():
+            if insert_targets["hide"] is not None:
+                return True
+            target_file, target_line = wysiwyg_get_current_position()
+            if not target_file or not target_line:
+                return False
+            target_file = str(target_file).replace("\\", "/")
+            target_line = int(target_line)
+            # Within a session the paused node keeps its pre-insert line
+            # number, so after an earlier save inserted lines here the
+            # fetched position points at OUR first inserted line (e.g. a
+            # freshly written `hide`) instead of the pause. The recorded
+            # save position knows every alias of this statement - the
+            # highest one is its real physical line.
+            saved_pos = store.wysiwyg_saved_position
+            if saved_pos and str(saved_pos[0]) == target_file:
+                try:
+                    known = saved_pos[1] if isinstance(saved_pos[1], (list, tuple, set)) else [saved_pos[1]]
+                    known = [int(l) for l in known]
+                    if target_line in known:
+                        target_line = max(known)
+                except Exception:
+                    pass
+            insert_targets["hide"] = (target_file, target_line)
+            insert_targets["base"] = (target_file, target_line)
+            insert_targets["add"] = wysiwyg_added_sprite_target(target_file, target_line)
+            return True
+
+        def _after_insert(kind, target_file, target_line):
+            insert_targets[kind] = (target_file, target_line + 1)
+            other = "hide" if kind == "add" else "add"
+            other_target = insert_targets[other]
+            if other_target and other_target[0] == target_file and other_target[1] >= target_line:
+                insert_targets[other] = (target_file, other_target[1] + 1)
+
+        def _insert_target_problem(target_file, tag):
+            if target_file.startswith("game/tl/"):
+                return tag + ": cannot insert while playing a translation - switch to the base language"
+            if target_file in WYSIWYG_RUNTIME.failed_files or target_file in failed_now:
+                return tag + ": saving to this file is disabled after a failed write - restart the game"
+            target_path = wysiwyg_source_path(target_file)
+            if not target_path or not os.path.exists(target_path):
+                return tag + ": current statement is not in an editable .rpy file"
+            return None
+
         for char in store.wysiwyg_chars:
             touched_file = None
             try:
                 if char.get("locked"):
                     continue
-                if char.get("pending_insert"):
-                    # A newly added sprite: INSERT a fresh show line before
-                    # the statement the game is paused on, instead of
-                    # replacing an existing one.
-                    if pending_target is None:
-                        target_file, target_line = wysiwyg_get_current_position()
-                        if not target_file or not target_line:
-                            errors.append(char.get("tag", "?") + ": current script position unknown")
-                            continue
-                        pending_target = (str(target_file).replace("\\", "/"), int(target_line))
-                    target_file, target_line = pending_target
-                    if target_file.startswith("game/tl/"):
-                        errors.append(char.get("tag", "?") + ": cannot insert while playing a translation - switch to the base language")
+                save_kind = wysiwyg_char_save_kind(char)
+                if save_kind is None:
+                    # A clean tracked character: counted for the status line.
+                    skipped_clean += 1
+                    continue
+                if save_kind == "added":
+                    # A newly added sprite: INSERT a fresh show line instead
+                    # of replacing an existing one.
+                    if not _ensure_insert_targets():
+                        errors.append(char.get("tag", "?") + ": current script position unknown")
                         continue
-                    if target_file in WYSIWYG_RUNTIME.failed_files or target_file in failed_now:
-                        errors.append(char.get("tag", "?") + ": saving to this file is disabled after a failed write - restart the game")
-                        continue
-                    target_path = wysiwyg_source_path(target_file)
-                    if not target_path or not os.path.exists(target_path):
-                        errors.append(char.get("tag", "?") + ": current statement is not in an editable .rpy file")
+                    # A sprite with its own `with` transition is meant to
+                    # appear at THIS point of the script - splicing it above
+                    # the scene's first show would fire the transition in
+                    # the middle of the scene build-up instead.
+                    target_kind = "hide" if char.get("with_expr") else "add"
+                    if target_kind == "add" and wysiwyg_hide_between(
+                            insert_targets["add"][0], insert_targets["add"][1],
+                            insert_targets["hide"][1], char.get("tag")):
+                        # A `hide` of this very tag sits below the anchor
+                        # (the character was removed here earlier): the new
+                        # show must land after it, at the paused statement.
+                        target_kind = "hide"
+                    target_file, target_line = insert_targets[target_kind]
+                    problem = _insert_target_problem(target_file, char.get("tag", "?"))
+                    if problem:
+                        errors.append(problem)
                         continue
                     line_to_write = wysiwyg_position_line_for_char(char)
                     if target_file not in batch_backups:
                         batch_backups[target_file] = wysiwyg_backup_source(target_file)
                     touched_file = target_file
-                    wysiwyg_log_debug("[INSERT] tag={0} target={1}:{2} code={3}".format(
-                        char.get("tag"), target_file, target_line, line_to_write
+                    wysiwyg_log_debug("[INSERT] tag={0} target={1}:{2} mode={3} code={4}".format(
+                        char.get("tag"), target_file, target_line,
+                        "at-pause" if target_kind == "hide" else "with-scene",
+                        line_to_write
                     ))
                     delta = wysiwyg_scriptedit_insert(target_file, target_line, line_to_write)
                     char["source_file"] = target_file
                     char["source_line"] = target_line
                     char["pending_insert"] = False
                     char["source_confidence"] = "linelog"
+                    # The dict must describe the line that now exists on
+                    # disk, or the next import will mis-classify it (an
+                    # empty at_list_exprs reads as "inherits a transform").
+                    char["at_list_exprs"] = wysiwyg_at_parts_for_char(char)
+                    char["has_atl"] = False
                     pending_written.add(id(char))
-                    # The next added sprite goes right below this one, still
-                    # above the statement the game is paused on.
-                    pending_target = (target_file, target_line + 1)
+                    # The next added sprite goes right below this one.
+                    _after_insert(target_kind, target_file, target_line)
                     wysiwyg_shift_source_lines(target_file, target_line, delta, inclusive=True,
                                                skip_char=char,
                                                journal=shift_journals.setdefault(target_file, []))
@@ -3193,9 +3735,38 @@ transform wysiwyg_blink_motion(strength=1.0):
                     changed += 1
                     written.append(char)
                     continue
-                if not wysiwyg_char_dirty(char):
-                    skipped_clean += 1
+                if save_kind == "removed":
+                    # Removal of a tracked character: INSERT a hide line
+                    # before the paused statement. The original show line
+                    # stays untouched, so earlier parts of the scene play
+                    # exactly as before.
+                    if not _ensure_insert_targets():
+                        errors.append(char.get("tag", "?") + ": current script position unknown")
+                        continue
+                    target_file, target_line = insert_targets["hide"]
+                    problem = _insert_target_problem(target_file, char.get("tag", "?"))
+                    if problem:
+                        errors.append(problem)
+                        continue
+                    line_to_write = "hide " + str(char.get("tag"))
+                    if target_file not in batch_backups:
+                        batch_backups[target_file] = wysiwyg_backup_source(target_file)
+                    touched_file = target_file
+                    wysiwyg_log_debug("[HIDE] tag={0} target={1}:{2} code={3}".format(
+                        char.get("tag"), target_file, target_line, line_to_write
+                    ))
+                    delta = wysiwyg_scriptedit_insert(target_file, target_line, line_to_write)
+                    char["pending_hide"] = False
+                    # Resolved after batch verification: the char leaves the
+                    # editor only when the write survives the reparse check.
+                    hidden_written.append((char, target_file))
+                    _after_insert("hide", target_file, target_line)
+                    wysiwyg_shift_source_lines(target_file, target_line, delta, inclusive=True,
+                                               skip_char=char,
+                                               journal=shift_journals.setdefault(target_file, []))
+                    changed += 1
                     continue
+                # save_kind == "edited": rewrite the existing show line.
                 edited_file = str(char["source_file"]).replace("\\", "/")
                 if edited_file in failed_now:
                     errors.append(char.get("tag", "?") + ": saving to this file is disabled after a failed write - restart the game")
@@ -3214,14 +3785,20 @@ transform wysiwyg_blink_motion(strength=1.0):
                 ))
                 delta = wysiwyg_scriptedit_replace(edited_file, edited_line, line_to_write)
                 char["has_atl"] = False
+                char["at_list_exprs"] = wysiwyg_at_parts_for_char(char)
                 if "wysiwyg_" in line_to_write and "_motion(" in line_to_write:
                     needs_motion_file = True
                 if delta:
                     # The edit changed the physical line count: shift every
-                    # remembered location below it in the same file.
+                    # remembered location below it in the same file,
+                    # including the already-captured insert targets.
                     wysiwyg_shift_source_lines(edited_file, edited_line, delta, inclusive=False,
                                                skip_char=char,
                                                journal=shift_journals.setdefault(edited_file, []))
+                    for _kind in ("add", "hide", "base"):
+                        _target = insert_targets[_kind]
+                        if _target and _target[0] == edited_file and _target[1] > edited_line:
+                            insert_targets[_kind] = (edited_file, _target[1] + delta)
                 changed += 1
                 written.append(char)
             except Exception as exc:
@@ -3232,6 +3809,39 @@ transform wysiwyg_blink_motion(strength=1.0):
                     # like a verification failure so the restore path below
                     # puts the backup back instead of leaving the damage.
                     failed_now.add(touched_file)
+
+        # The scene-level `with` statement, edited as one shared value.
+        scene_with = store.wysiwyg_scene_with
+        if wysiwyg_scene_with_dirty(scene_with):
+            sw_file = str(scene_with.get("file", "")).replace("\\", "/")
+            sw_line = int(scene_with.get("line") or 0)
+            try:
+                if sw_file in WYSIWYG_RUNTIME.failed_files or sw_file in failed_now:
+                    errors.append("scene with: saving to this file is disabled after a failed write - restart the game")
+                elif sw_file.startswith("game/tl/"):
+                    errors.append("scene with: cannot edit while playing a translation")
+                else:
+                    # Strip the trailing comment the same way import did, or
+                    # a commented line would always read as "changed".
+                    current_text = wysiwyg_strip_line_comment(str(wysiwyg_source_line_text(sw_file, sw_line) or "")).strip()
+                    match = re.match(r"^with\s+(.+?)\s*$", current_text)
+                    if not match or match.group(1) != str(scene_with.get("original")):
+                        errors.append("scene with: the line changed since import - press Import Scene again")
+                    else:
+                        line_to_write = "with " + str(scene_with.get("expr"))
+                        if sw_file not in batch_backups:
+                            batch_backups[sw_file] = wysiwyg_backup_source(sw_file)
+                        wysiwyg_log_debug("[SCENE-WITH] {0}:{1} code={2}".format(sw_file, sw_line, line_to_write))
+                        delta = wysiwyg_scriptedit_replace(sw_file, sw_line, line_to_write)
+                        if delta:
+                            wysiwyg_shift_source_lines(sw_file, sw_line, delta, inclusive=False,
+                                                       journal=shift_journals.setdefault(sw_file, []))
+                        scene_with["written_original"] = scene_with.get("original")
+                        scene_with["original"] = str(scene_with.get("expr"))
+                        changed += 1
+            except Exception as exc:
+                errors.append("scene with: " + str(exc))
+                failed_now.add(sw_file)
 
         if needs_motion_file:
             try:
@@ -3276,6 +3886,64 @@ transform wysiwyg_blink_motion(strength=1.0):
                     reverted_char["source_file"] = ""
                     reverted_char["source_line"] = 0
                     reverted_char["source_confidence"] = "new"
+            scene_with = store.wysiwyg_scene_with
+            if (scene_with and "written_original" in scene_with
+                    and str(scene_with.get("file", "")).replace("\\", "/") == failed_file):
+                scene_with["original"] = scene_with.pop("written_original")
+                changed -= 1
+        if store.wysiwyg_scene_with:
+            store.wysiwyg_scene_with.pop("written_original", None)
+
+        # Resolve removals: a hide line that survived verification takes
+        # its character off the editor's scene list (the tag was hidden
+        # from the master layer at import, which now matches the script);
+        # a reverted one puts the removal mark back for the next save.
+        for hidden_char, hide_file in hidden_written:
+            if hide_file in failed_now:
+                hidden_char["pending_hide"] = True
+                changed -= 1
+            else:
+                store.wysiwyg_chars = [c for c in store.wysiwyg_chars if c is not hidden_char]
+                if store.wysiwyg_selected_tag == hidden_char.get("tag"):
+                    store.wysiwyg_selected_tag = None
+
+        if changed and not failed_now:
+            # Remember WHERE this save happened. The autoreload that follows
+            # wipes the engine line log; when the next import runs from this
+            # exact statement, the current entries' sources carry over
+            # instead of degrading to uncertain AST guesses. Two candidate
+            # line numbers: within the session, the paused node keeps its
+            # pre-insert linenumber (the engine never renumbers the node an
+            # insert landed on), while after an autoreload the re-parsed
+            # file reports the physically shifted one.
+            pos_file = None
+            candidates = []
+            if insert_targets["hide"] is not None:
+                pos_file = insert_targets["hide"][0]
+                candidates.append(int(insert_targets["hide"][1]))
+                if insert_targets["base"] is not None:
+                    candidates.append(int(insert_targets["base"][1]))
+            else:
+                # No inserts happened, so ctx.current was never repointed
+                # and can be read directly. Keep any previously recorded
+                # aliases of this statement: the fetched number may be the
+                # stale in-session one while the physical line (what an
+                # autoreload will report) lives in the old candidate list.
+                pos_f, pos_l = wysiwyg_get_current_position()
+                if pos_f and pos_l:
+                    pos_file = str(pos_f).replace("\\", "/")
+                    candidates.append(int(pos_l))
+                    prev_sp = store.wysiwyg_saved_position
+                    if prev_sp and str(prev_sp[0]) == pos_file:
+                        try:
+                            prev_lines = prev_sp[1] if isinstance(prev_sp[1], (list, tuple, set)) else [prev_sp[1]]
+                            prev_lines = [int(l) for l in prev_lines]
+                            if int(pos_l) in prev_lines:
+                                candidates.extend(prev_lines)
+                        except Exception:
+                            pass
+            if pos_file and candidates:
+                store.wysiwyg_saved_position = (pos_file, sorted(set(candidates)))
 
         if changed:
             for char in written:
@@ -3288,6 +3956,11 @@ transform wysiwyg_blink_motion(strength=1.0):
             WYSIWYG_RUNTIME.master_snapshot = None
 
         if errors:
+            # The status bar shows two errors and then disappears; the log
+            # keeps all of them, so "did that save actually run?" stays
+            # answerable after the fact.
+            for err in errors:
+                wysiwyg_log_debug("[SAVE-ERROR] " + str(err))
             wysiwyg_set_status("Saved " + str(changed) + " line(s), errors: " + "; ".join(errors[:2]))
         elif changed:
             wysiwyg_set_status("Saved " + str(changed) + " changed line(s), verified. Backups in game/wysiwyg_backups/.")
@@ -3296,6 +3969,91 @@ transform wysiwyg_blink_motion(strength=1.0):
         else:
             wysiwyg_set_status("Nothing to save. Import Scene first.")
 
+    # Save gate: rewriting a line the editor only GUESSED at (uncertain
+    # source) can damage an unrelated statement. Instead of saving right
+    # away, the toolbar button routes here; when any dirty character is
+    # uncertain, a confirmation box lists them and offers Show Code first.
+    def wysiwyg_request_save():
+        if store.wysiwyg_confirm_close:
+            # The close box is already asking about this work; a second
+            # dialog on top of it would render at the same spot and fight
+            # for the same clicks. Answer the close question first.
+            return
+        risky = sorted(set([
+            str(c.get("tag")) for c in store.wysiwyg_chars
+            if wysiwyg_char_save_kind(c) == "edited"
+            and c.get("source_confidence") not in ("linelog", "carryover")
+        ]))
+        if risky:
+            # A live inline input would keep taking keystrokes (and commit
+            # on Enter) behind the frozen backdrop - drop it with the rest
+            # of the frozen UI.
+            wysiwyg_clear_edit_field()
+            store.wysiwyg_confirm_save = risky
+            renpy.restart_interaction()
+            return
+        wysiwyg_save_changes()
+
+    def wysiwyg_confirm_save_proceed():
+        store.wysiwyg_confirm_save = None
+        wysiwyg_save_changes()
+
+    def wysiwyg_confirm_save_review():
+        store.wysiwyg_confirm_save = None
+        if store.wysiwyg_panel != "code":
+            wysiwyg_toggle_code_panel()
+        else:
+            renpy.restart_interaction()
+
+    def wysiwyg_unsaved_changes():
+        # Everything the next Save Changes would write, as short labels.
+        # Built on the same predicates the save loop branches on, so the
+        # close confirmation can neither cry wolf nor miss anything.
+        kind_labels = {"added": " (added)", "removed": " (removed)", "edited": " (moved/edited)"}
+        items = []
+        for c in store.wysiwyg_chars:
+            kind = wysiwyg_char_save_kind(c)
+            if kind:
+                items.append(str(c.get("tag")) + kind_labels[kind])
+        if wysiwyg_scene_with_dirty():
+            items.append("scene with")
+        return items
+
+    # Close gate: closing restores the imported scene and throws away
+    # every unsaved edit. The Close button and the F5 toggle route here;
+    # with unsaved work pending a confirmation lists what would be lost.
+    def wysiwyg_request_close():
+        if store.wysiwyg_confirm_close:
+            # F5 while the box is up is its keyboard answer: discard and
+            # close. That keeps the old F5-closes-and-discards behavior,
+            # now one confirming press away instead of instant.
+            wysiwyg_confirm_close_discard()
+            return
+        if store.wysiwyg_confirm_save:
+            # F5 says "I want to close": withdraw the save question and
+            # fall through to the close question - a silently dead key
+            # would just look broken.
+            store.wysiwyg_confirm_save = None
+        if store.wysiwyg_active:
+            unsaved = wysiwyg_unsaved_changes()
+            if unsaved:
+                # See wysiwyg_request_save: no live input behind the box.
+                wysiwyg_clear_edit_field()
+                store.wysiwyg_confirm_close = unsaved
+                renpy.restart_interaction()
+                return
+        wysiwyg_toggle()
+
+    def wysiwyg_confirm_close_discard():
+        store.wysiwyg_confirm_close = None
+        wysiwyg_toggle()
+
+    def wysiwyg_confirm_close_save():
+        # Save instead of closing: the editor stays open so the user can
+        # check the status line (a save can still fail) and close cleanly.
+        store.wysiwyg_confirm_close = None
+        wysiwyg_request_save()
+
     def wysiwyg_on_drag(drags, drop):
         if not drags:
             return
@@ -3303,6 +4061,8 @@ transform wysiwyg_blink_motion(strength=1.0):
         tag = drag.drag_name
         char = wysiwyg_find_char(tag)
         if char:
+            if store.wysiwyg_selected_tag != tag:
+                wysiwyg_clear_edit_field()
             store.wysiwyg_selected_tag = tag
             img_w = wysiwyg_float(char.get("img_w", char.get("original_w", 400.0)), 400.0)
             img_h = wysiwyg_float(char.get("img_h", char.get("original_h", 800.0)), 800.0)
@@ -3443,8 +4203,15 @@ transform wysiwyg_blink_motion(strength=1.0):
         return count
 
     def wysiwyg_begin_edit(field):
+        # Clicking the field's own button again closes it, so a stray
+        # click is undone by the same click (the s... buttons stay visible
+        # while their input is open; pos/rot/scale swap into the input).
+        if store.wysiwyg_edit_field == field:
+            wysiwyg_cancel_edit()
+            return
         char = wysiwyg_find_char(store.wysiwyg_selected_tag)
-        if not char:
+        if not char and field != "scenewithsec":
+            # Only the scene-level field exists without a selection.
             return
         store.wysiwyg_edit_field = field
         if field == "pos":
@@ -3457,22 +4224,32 @@ transform wysiwyg_blink_motion(strength=1.0):
             store.wysiwyg_edit_buffer = wysiwyg_fmt_float(char.get("rotate", 0.0), 1)
         elif field == "scale":
             store.wysiwyg_edit_buffer = wysiwyg_fmt_float(abs(wysiwyg_float(char.get("xzoom", 1.0), 1.0)), 3)
+        elif field in ("withsec", "scenewithsec"):
+            source = char.get("with_expr") if field == "withsec" else (store.wysiwyg_scene_with or {}).get("expr")
+            key = wysiwyg_with_preset_key(source)
+            store.wysiwyg_edit_buffer = wysiwyg_fmt_float(key[1], 2) if (key and key[0] == "dissolve") else "0.5"
         renpy.restart_interaction()
 
-    def wysiwyg_cancel_edit():
+    def wysiwyg_clear_edit_field():
+        # Drops a half-typed inline edit without restarting the
+        # interaction - for callers that are mid-way through their own
+        # state change and restart (or get restarted) on their own.
         store.wysiwyg_edit_field = None
         store.wysiwyg_edit_buffer = ""
+
+    def wysiwyg_cancel_edit():
+        wysiwyg_clear_edit_field()
         renpy.restart_interaction()
 
     def wysiwyg_commit_edit():
         field = store.wysiwyg_edit_field
         char = wysiwyg_find_char(store.wysiwyg_selected_tag)
         store.wysiwyg_edit_field = None
-        if not char or not field:
+        if not field or (not char and field != "scenewithsec"):
             renpy.restart_interaction()
             return
         text = str(store.wysiwyg_edit_buffer or "").strip()
-        tag = char.get("tag")
+        tag = char.get("tag") if char else None
 
         if field == "pos":
             try:
@@ -3511,6 +4288,16 @@ transform wysiwyg_blink_motion(strength=1.0):
             wysiwyg_set_char_transform(tag, "xzoom", value)
             if not store.wysiwyg_scale_locked:
                 wysiwyg_set_char_transform(tag, "yzoom", value)
+        elif field in ("withsec", "scenewithsec"):
+            value = wysiwyg_float(text.replace(",", "."), None)
+            if value is None or value <= 0 or value > 30:
+                wysiwyg_set_status("Dissolve time must be a number of seconds (0-30).")
+                return
+            expr = "Dissolve(" + wysiwyg_fmt_float(value, 2) + ")"
+            if field == "withsec":
+                wysiwyg_set_with_expr(tag, expr)
+            else:
+                wysiwyg_set_scene_with(expr)
         renpy.restart_interaction()
 
     def wysiwyg_pos_input_sync(tag):
@@ -3609,6 +4396,10 @@ transform wysiwyg_blink_motion(strength=1.0):
         store.wysiwyg_bg = None
         store.wysiwyg_bg_runtime = None
         store.wysiwyg_bg_source = None
+        store.wysiwyg_scene_with = None
+        store.wysiwyg_confirm_save = None
+        store.wysiwyg_confirm_close = None
+        wysiwyg_clear_edit_field()
         store.wysiwyg_chars = []
         store.wysiwyg_selected_tag = None
         store.wysiwyg_undo_stack = []
@@ -3621,6 +4412,11 @@ transform wysiwyg_blink_motion(strength=1.0):
         store.wysiwyg_bg = None
         store.wysiwyg_bg_runtime = None
         store.wysiwyg_bg_source = None
+        store.wysiwyg_scene_with = None
+        store.wysiwyg_confirm_save = None
+        store.wysiwyg_confirm_close = None
+        wysiwyg_clear_edit_field()
+        store.wysiwyg_browser_hover = None
         store.wysiwyg_chars = []
         store.wysiwyg_selected_tag = None
         store.wysiwyg_undo_stack = []
@@ -3668,8 +4464,13 @@ transform wysiwyg_blink_motion(strength=1.0):
         for char in store.wysiwyg_chars:
             if char.get("locked"):
                 lines.append("# " + str(char.get("tag")) + ": locked (" + str(char.get("locked")) + ") - source line is never rewritten")
+            elif char.get("pending_hide"):
+                lines.append("hide " + str(char.get("tag")) + "  # inserted before the current statement")
             else:
                 lines.append(wysiwyg_position_line_for_char(char))
+        scene_with = store.wysiwyg_scene_with
+        if wysiwyg_scene_with_dirty(scene_with):
+            lines.append("with " + str(scene_with.get("expr")) + "  # rewrites " + str(scene_with.get("file")) + ":" + str(scene_with.get("line")))
         if len(lines) == 1:
             lines.append("# Nothing imported yet. Click Import Scene first.")
         return "\n".join(lines)
@@ -3748,6 +4549,14 @@ init 10:
     style wysiwyg_title_text is wysiwyg_text
     style wysiwyg_title_text:
         size int(22 * config.screen_height / 1080.0)
+        bold True
+
+    # Lines that show a CURRENT VALUE read from the script (as opposed to
+    # help prose, which shares the same small size): amber and bold, so
+    # they read as state, not as another sentence of explanation.
+    style wysiwyg_value_text is wysiwyg_small_text
+    style wysiwyg_value_text:
+        color "#ffd28a"
         bold True
 
     style wysiwyg_guide_text is wysiwyg_small_text
@@ -3855,10 +4664,63 @@ transform wysiwyg_blink_motion(strength=1.0):
 # in the game. The editor itself is the modal wysiwyg_main screen.
 screen wysiwyg_hotkey():
     zorder 300
-    key "K_F5" action Function(wysiwyg_toggle)
+    key "K_F5" action Function(wysiwyg_request_close)
     if wysiwyg_active:
         key "K_h" action NullAction()
         use wysiwyg_main
+
+# Shared shell of the confirmation boxes; the caller transcludes its own
+# extra body lines and button row, so both boxes always look alike.
+screen wysiwyg_confirm_box(title, body):
+    frame:
+        background Solid("#101418f2")
+        padding (16, 14)
+        xalign 0.5
+        yalign 0.4
+        xmaximum 560
+        vbox:
+            spacing 8
+            text title style "wysiwyg_text" bold True
+            text body style "wysiwyg_small_text"
+            transclude
+
+# One inline edit-field row, used by every numeric field: the input
+# itself commits on Enter, Escape cancels, and the two buttons repeat
+# both for the mouse.
+screen wysiwyg_edit_input_row(box_w=64, px_w=52, max_len=6, ok_min=0, cancel_label="Cancel", suffix=None):
+    frame:
+        background Solid("#101418cc")
+        padding (6, 2)
+        xsize box_w
+        input value VariableInputValue("wysiwyg_edit_buffer") length max_len pixel_width px_w style "wysiwyg_small_text" action Function(wysiwyg_commit_edit)
+    if suffix:
+        text suffix style "wysiwyg_small_text" yalign 0.5
+    textbutton "OK" style "wysiwyg_button" xminimum ok_min action Function(wysiwyg_commit_edit)
+    textbutton cancel_label style "wysiwyg_button" xminimum 0 action Function(wysiwyg_cancel_edit) tooltip "Discard the typed value"
+    key "K_ESCAPE" action Function(wysiwyg_cancel_edit)
+
+# Scene reveal (with) controls. The value is scene-level, so the section
+# shows both in the selected-character panel and when nothing is selected
+# - deleting the last character must not lock the user out of it.
+screen wysiwyg_scene_with_section():
+    if wysiwyg_scene_with:
+        null height 2
+        text "Scene reveal (with)" style "wysiwyg_text" bold True
+        text "The standalone `with` statement that reveals this scene - shared by everything shown with it. Saved into the script; no live preview." style "wysiwyg_small_text"
+        $ _sw = wysiwyg_scene_with
+        $ _sw_key = wysiwyg_with_preset_key(_sw.get("expr"))
+        text wysiwyg_wrap_path("with " + str(_sw.get("expr")) + "  [" + str(_sw.get("file")) + ":" + str(_sw.get("line")) + "]") style "wysiwyg_value_text"
+        hbox:
+            spacing 4
+            for _w_label, _w_expr in WYSIWYG_WITH_PRESETS:
+                textbutton _w_label style "wysiwyg_button" xminimum 0 action Function(wysiwyg_set_scene_with, _w_expr) selected (_sw_key == wysiwyg_with_preset_key(_w_expr))
+            textbutton "s..." style "wysiwyg_button" xminimum 0 action Function(wysiwyg_begin_edit, "scenewithsec") selected (wysiwyg_edit_field == "scenewithsec") tooltip "Type a custom dissolve time in seconds"
+        if wysiwyg_edit_field == "scenewithsec":
+            hbox:
+                spacing 4
+                use wysiwyg_edit_input_row(suffix="sec")
+        if wysiwyg_scene_with_dirty(_sw):
+            textbutton wysiwyg_ui_text("Restore original (with " + wysiwyg_short_expr(_sw.get("original")) + ")") style "wysiwyg_button" xminimum 0 action Function(wysiwyg_set_scene_with, _sw.get("original")) tooltip wysiwyg_ui_text("with " + str(_sw.get("original")))
 
 # Main overlay: character previews + drag handle, toolbar, side panel.
 # Non-selected characters are drawn as plain `add`s (sorted by zorder);
@@ -3877,13 +4739,15 @@ screen wysiwyg_main():
     on "show" action Function(wysiwyg_hide_master_chars)
     on "replace" action Function(wysiwyg_hide_master_chars)
     $ _selected_drag_char = wysiwyg_find_char(wysiwyg_selected_tag) if wysiwyg_selected_tag else None
-    if _selected_drag_char and (_selected_drag_char.get("preview_hidden") or _selected_drag_char.get("locked")):
+    if _selected_drag_char and (_selected_drag_char.get("preview_hidden") or _selected_drag_char.get("locked") or _selected_drag_char.get("pending_hide")):
         $ _selected_drag_char = None
 
     if wysiwyg_grid:
         use wysiwyg_grid_overlay
 
-    if _selected_drag_char:
+    # Nudge keys pause while a confirmation box is up - the box's list
+    # must describe a scene that cannot change under it.
+    if _selected_drag_char and not wysiwyg_confirm_save and not wysiwyg_confirm_close:
         $ _nstep = int(wysiwyg_nudge_step or 1)
         key "K_LEFT" action Function(wysiwyg_nudge_selected, -_nstep, 0)
         key "K_RIGHT" action Function(wysiwyg_nudge_selected, _nstep, 0)
@@ -3899,7 +4763,7 @@ screen wysiwyg_main():
         key "shift_K_DOWN" action Function(wysiwyg_nudge_selected, 0, 10)
 
     for _wch in sorted(wysiwyg_chars, key=lambda c: int(c.get("zorder") or 0)):
-        if _wch.get("tag") != wysiwyg_selected_tag and not _wch.get("preview_hidden") and not _wch.get("locked"):
+        if _wch.get("tag") != wysiwyg_selected_tag and not _wch.get("preview_hidden") and not _wch.get("locked") and not _wch.get("pending_hide"):
             $ _wch_cx = int(round(_wch.get("x") + _wch.get("w") / 2.0))
             $ _wch_cy = int(round(_wch.get("y") + _wch.get("h") / 2.0))
             if wysiwyg_motion_fx_uses_placement(_wch):
@@ -3907,7 +4771,17 @@ screen wysiwyg_main():
             else:
                 add wysiwyg_preview_displayable(_wch, xpos=_wch_cx, ypos=_wch_cy)
 
-    if _selected_drag_char:
+    if _selected_drag_char and (wysiwyg_confirm_save or wysiwyg_confirm_close):
+        # While a confirmation box is up the selected sprite renders as a
+        # plain preview: a live drag would keep its pointer grab and could
+        # still move the sprite under the frozen backdrop.
+        $ _sel_cx = int(round(_selected_drag_char.get("x") + _selected_drag_char.get("w") / 2.0))
+        $ _sel_cy = int(round(_selected_drag_char.get("y") + _selected_drag_char.get("h") / 2.0))
+        if wysiwyg_motion_fx_uses_placement(_selected_drag_char):
+            add wysiwyg_preview_displayable(_selected_drag_char, xpos=_sel_cx, ypos=_sel_cy) at wysiwyg_motion_fx_placement_transform(_selected_drag_char)
+        else:
+            add wysiwyg_preview_displayable(_selected_drag_char, xpos=_sel_cx, ypos=_sel_cy)
+    elif _selected_drag_char:
         $ _sel_cx = int(round(_selected_drag_char.get("x") + _selected_drag_char.get("w") / 2.0))
         $ _sel_cy = int(round(_selected_drag_char.get("y") + _selected_drag_char.get("h") / 2.0))
         $ _sel_box_w, _sel_box_h = wysiwyg_render_box(_selected_drag_char)
@@ -3932,7 +4806,7 @@ screen wysiwyg_main():
 
 
     for _wch in wysiwyg_chars:
-        if _wch.get("tag") != wysiwyg_selected_tag and not _wch.get("preview_hidden"):
+        if _wch.get("tag") != wysiwyg_selected_tag and not _wch.get("preview_hidden") and not _wch.get("pending_hide"):
             frame:
                 background Solid("#000000aa")
                 padding (8, 4)
@@ -3948,17 +4822,17 @@ screen wysiwyg_main():
         xfill True
         hbox:
             spacing 8
+            # UI / Text mode buttons stay out of the toolbar until those
+            # modes actually exist - greyed-out stubs only confuse users.
             textbutton "Characters" style "wysiwyg_button" action SetVariable("wysiwyg_panel", "characters") selected (wysiwyg_panel == "characters")
-            textbutton "UI" style "wysiwyg_button" action NullAction() sensitive False
-            textbutton "Text" style "wysiwyg_button" action NullAction() sensitive False
             null width 20
             textbutton "Import Scene" style "wysiwyg_button" action Function(wysiwyg_import_scene)
-            textbutton ("Save Changes" + (" ●" if (wysiwyg_chars and not wysiwyg_saved_runtime) else "")) style "wysiwyg_button" action Function(wysiwyg_save_changes)
+            textbutton ("Save Changes" + (" ●" if (wysiwyg_chars and not wysiwyg_saved_runtime) else "")) style "wysiwyg_button" action Function(wysiwyg_request_save)
             textbutton "Undo" style "wysiwyg_button" action Function(wysiwyg_undo_move)
             textbutton "Show Code" style "wysiwyg_button" action Function(wysiwyg_toggle_code_panel) selected (wysiwyg_panel == "code")
             textbutton "Grid" style "wysiwyg_button" action ToggleVariable("wysiwyg_grid") selected wysiwyg_grid
             textbutton "Clear Editor" style "wysiwyg_danger_button" action Function(wysiwyg_reset_editor)
-            textbutton "Close" style "wysiwyg_danger_button" action Function(wysiwyg_toggle)
+            textbutton "Close" style "wysiwyg_danger_button" action Function(wysiwyg_request_close)
 
     if wysiwyg_selected_tag:
         frame:
@@ -3979,13 +4853,63 @@ screen wysiwyg_main():
         else:
             use wysiwyg_p_characters
 
+    # Floating preview of the image browser row under the mouse. Lives
+    # here, next to the panel, because inside the browser's viewport it
+    # would be clipped to the panel width.
+    if wysiwyg_panel != "code" and wysiwyg_char_page == "add" and wysiwyg_browser_hover:
+        $ _prev_row = wysiwyg_browser_hover
+        $ _prev_s = wysiwyg_ui_scale()
+        frame:
+            background Solid("#101418ee")
+            padding (8, 8)
+            xanchor 1.0
+            xpos config.screen_width - int(398 * _prev_s)
+            ypos 120
+            vbox:
+                spacing 4
+                add str(_prev_row.get("file", "")) fit "contain" xysize (int(300 * _prev_s), int(380 * _prev_s))
+                text _prev_row.get("name_wrapped", "") style "wysiwyg_small_text"
+
+    # Confirmation boxes. The full-screen backdrop button freezes every
+    # control behind them (and the nudge keys pause above), so the list a
+    # box shows stays true for as long as it is on screen. Esc backs out
+    # of either box without doing anything.
+    if wysiwyg_confirm_save or wysiwyg_confirm_close:
+        button:
+            xfill True
+            yfill True
+            background Solid("#00000066")
+            action NullAction()
+        key "K_ESCAPE" action [SetVariable("wysiwyg_confirm_save", None), SetVariable("wysiwyg_confirm_close", None)]
+
+    # Box for saves that would rewrite uncertain source lines.
+    if wysiwyg_confirm_save:
+        use wysiwyg_confirm_box("Save with uncertain source lines?", wysiwyg_ui_text("These characters were matched by scanning the script, not by watching it run: " + ", ".join(wysiwyg_confirm_save) + ". The editor could rewrite a wrong line.")):
+            text "Show Code displays exactly which lines will be rewritten - check them there first." style "wysiwyg_small_text"
+            hbox:
+                spacing 8
+                textbutton "Show Code" style "wysiwyg_button" action Function(wysiwyg_confirm_save_review)
+                textbutton "Save anyway" style "wysiwyg_danger_button" action Function(wysiwyg_confirm_save_proceed)
+                textbutton "Cancel" style "wysiwyg_button" action SetVariable("wysiwyg_confirm_save", None)
+
+    # Box for closing the editor with unsaved edits.
+    if wysiwyg_confirm_close:
+        use wysiwyg_confirm_box("Close without saving?", wysiwyg_ui_text("Unsaved changes: " + ", ".join(wysiwyg_confirm_close) + ". Closing discards them - nothing has been written to any file. F5 discards and closes; Esc goes back.")):
+            hbox:
+                spacing 8
+                textbutton "Save Changes" style "wysiwyg_button" action Function(wysiwyg_confirm_close_save)
+                textbutton "Discard & Close" style "wysiwyg_danger_button" action Function(wysiwyg_confirm_close_discard)
+                textbutton "Back" style "wysiwyg_button" action SetVariable("wysiwyg_confirm_close", None)
+
     if wysiwyg_status:
         frame:
             background Solid("#000000aa")
             padding (10, 6)
             xalign 0.0
             yalign 1.0
-            text wysiwyg_ui_text(wysiwyg_status) style "wysiwyg_small_text"
+            # Long messages (paths, per-file errors) wrap instead of
+            # running under the side panel.
+            text wysiwyg_wrap_path(wysiwyg_status) style "wysiwyg_small_text" xmaximum int(config.screen_width * 0.55)
 
 screen wysiwyg_grid_overlay():
     $ _w = int(config.screen_width)
@@ -4040,12 +4964,16 @@ screen wysiwyg_p_characters():
                             hbox:
                                 spacing 4
                                 if _w_locked:
-                                    textbutton (wysiwyg_ui_text(wysiwyg_char_label(_w_tag)) + " (locked)") style "wysiwyg_button" xsize int(170 * _ui_s) action Function(wysiwyg_set_status, "Locked: " + str(_w_locked) + " - stays live in the game, never modified or saved.")
+                                    textbutton (wysiwyg_ui_text(wysiwyg_short_label(_w_tag, 9)) + " (locked)") style "wysiwyg_button" xsize int(140 * _ui_s) action Function(wysiwyg_set_status, "Locked: " + str(_w_locked) + " - stays live in the game, never modified or saved.") tooltip wysiwyg_ui_text(wysiwyg_char_label(_w_tag))
                                     text "live" style "wysiwyg_small_text" yalign 0.5
+                                elif _wch.get("pending_hide"):
+                                    text (wysiwyg_ui_text(wysiwyg_short_label(_w_tag, 8)) + " (removed)") style "wysiwyg_small_text" xsize int(140 * _ui_s) yalign 0.5
+                                    textbutton "Undo remove" style "wysiwyg_button" xminimum 56 action Function(wysiwyg_unremove_character, _w_tag)
                                 else:
-                                    textbutton wysiwyg_ui_text(wysiwyg_char_label(_w_tag)) style "wysiwyg_button" xsize int(170 * _ui_s) action SetVariable("wysiwyg_selected_tag", _w_tag) selected (_w_tag == wysiwyg_selected_tag)
-                                    textbutton ("Show" if _wch.get("preview_hidden") else "Hide") style "wysiwyg_button" xminimum 56 action Function(wysiwyg_toggle_preview_hidden, _w_tag)
-                                    textbutton "Reset" style "wysiwyg_button" xminimum 56 action Function(wysiwyg_reset_position_for, _w_tag)
+                                    textbutton wysiwyg_ui_text(wysiwyg_short_label(_w_tag)) style "wysiwyg_button" xsize int(140 * _ui_s) action Function(wysiwyg_select_char, _w_tag) selected (_w_tag == wysiwyg_selected_tag) tooltip wysiwyg_ui_text(wysiwyg_char_label(_w_tag))
+                                    textbutton ("Show" if _wch.get("preview_hidden") else "Hide") style "wysiwyg_button" xminimum 0 action Function(wysiwyg_toggle_preview_hidden, _w_tag)
+                                    textbutton "Reset" style "wysiwyg_button" xminimum 0 action Function(wysiwyg_reset_position_for, _w_tag)
+                                    textbutton "Del" style "wysiwyg_button" xminimum 0 action Function(wysiwyg_remove_character, _w_tag) tooltip ("Discard this unsaved sprite" if _wch.get("pending_insert") else "Remove from scene - Save Changes writes a hide line")
                 vbar value YScrollValue("wys_char_list") style "wysiwyg_vbar"
 
         if _selected_char:
@@ -4058,19 +4986,13 @@ screen wysiwyg_p_characters():
                     spacing 2
                     hbox:
                         spacing 8
-                        text wysiwyg_ui_text(_selected_char.get("runtime_image") or _selected_char.get("image")) style "wysiwyg_text"
+                        text wysiwyg_wrap_path(_selected_char.get("runtime_image") or _selected_char.get("image")) style "wysiwyg_text"
                         if not wysiwyg_saved_runtime:
                             text "●" color "#ffb347" style "wysiwyg_text"
                     hbox:
                         spacing 8
                         if wysiwyg_edit_field == "pos":
-                            frame:
-                                background Solid("#101418cc")
-                                padding (6, 2)
-                                xsize 150
-                                input value VariableInputValue("wysiwyg_edit_buffer") length 14 pixel_width 138 style "wysiwyg_small_text"
-                            textbutton "OK" style "wysiwyg_button" xminimum 40 action Function(wysiwyg_commit_edit)
-                            key "K_RETURN" action Function(wysiwyg_commit_edit)
+                            use wysiwyg_edit_input_row(box_w=150, px_w=138, max_len=14, ok_min=40, cancel_label="✕")
                         else:
                             textbutton ("Center: " + str(int(round(_selected_char.get("x", 0) + _selected_char.get("w", 0) / 2.0))) + ", " + str(int(round(_selected_char.get("y", 0) + _selected_char.get("h", 0) / 2.0)))) style "wysiwyg_button" action Function(wysiwyg_begin_edit, "pos") tooltip "Click to type exact position"
                         $ _z_val = int(_selected_char.get("zorder") or 0)
@@ -4183,13 +5105,7 @@ screen wysiwyg_p_characters():
                             hbox:
                                 spacing 6
                                 if wysiwyg_edit_field == "rot":
-                                    frame:
-                                        background Solid("#101418cc")
-                                        padding (6, 2)
-                                        xsize 90
-                                        input value VariableInputValue("wysiwyg_edit_buffer") length 8 pixel_width 78 style "wysiwyg_small_text"
-                                    textbutton "OK" style "wysiwyg_button" xminimum 40 action Function(wysiwyg_commit_edit)
-                                    key "K_RETURN" action Function(wysiwyg_commit_edit)
+                                    use wysiwyg_edit_input_row(box_w=90, px_w=78, max_len=8, ok_min=40, cancel_label="✕")
                                 else:
                                     textbutton (wysiwyg_fmt_float(_selected_char.get("rotate", 0.0), 1) + "°") style "wysiwyg_button" xminimum 70 action Function(wysiwyg_begin_edit, "rot") tooltip "Click to type exact angle"
                                 bar value DictValue(_selected_char, "rotate", 360.0, offset=-180.0, step=1.0, action=Function(wysiwyg_drag_transform_slider, _sel_tag, "rotate")) style "wysiwyg_slider" xsize int(240 * _ui_s) yalign 0.5 released Function(wysiwyg_release_transform_slider, _sel_tag, "rotate")
@@ -4199,13 +5115,7 @@ screen wysiwyg_p_characters():
                             hbox:
                                 spacing 6
                                 if wysiwyg_edit_field == "scale":
-                                    frame:
-                                        background Solid("#101418cc")
-                                        padding (6, 2)
-                                        xsize 90
-                                        input value VariableInputValue("wysiwyg_edit_buffer") length 8 pixel_width 78 style "wysiwyg_small_text"
-                                    textbutton "OK" style "wysiwyg_button" xminimum 40 action Function(wysiwyg_commit_edit)
-                                    key "K_RETURN" action Function(wysiwyg_commit_edit)
+                                    use wysiwyg_edit_input_row(box_w=90, px_w=78, max_len=8, ok_min=40, cancel_label="✕")
                                 else:
                                     textbutton (wysiwyg_fmt_float(abs(wysiwyg_float(_selected_char.get("xzoom", 1.0), 1.0)), 2) + "x") style "wysiwyg_button" xminimum 70 action Function(wysiwyg_begin_edit, "scale") tooltip "Click to type exact scale"
                                 textbutton ("Linked" if wysiwyg_scale_locked else "Unlinked") style "wysiwyg_button" action Function(wysiwyg_toggle_scale_lock)
@@ -4217,6 +5127,34 @@ screen wysiwyg_p_characters():
                             null height 2
                             text ("Opacity " + wysiwyg_fmt_float(_selected_char.get("alpha", 1.0), 2)) style "wysiwyg_text" bold True
                             bar value DictValue(_selected_char, "alpha", 1.0, step=0.01, action=Function(wysiwyg_drag_transform_slider, _sel_tag, "alpha")) style "wysiwyg_slider" released Function(wysiwyg_release_transform_slider, _sel_tag, "alpha")
+
+                            null height 2
+                            text "Appear (with)" style "wysiwyg_text" bold True
+                            text "Dissolve-in over the given time; fade goes through black. Edits the `with` on this show line only." style "wysiwyg_small_text"
+                            $ _cur_with = _selected_char.get("with_expr") or None
+                            $ _orig_with = _selected_char.get("original_with_expr") or None
+                            $ _cur_with_key = wysiwyg_with_preset_key(_cur_with)
+                            hbox:
+                                spacing 4
+                                for _w_label, _w_expr in WYSIWYG_WITH_PRESETS:
+                                    textbutton _w_label style "wysiwyg_button" xminimum 0 action Function(wysiwyg_set_with_expr, _sel_tag, _w_expr) selected (_cur_with_key == wysiwyg_with_preset_key(_w_expr))
+                                textbutton "s..." style "wysiwyg_button" xminimum 0 action Function(wysiwyg_begin_edit, "withsec") selected (wysiwyg_edit_field == "withsec") tooltip "Type a custom dissolve time in seconds"
+                            if wysiwyg_edit_field == "withsec":
+                                hbox:
+                                    spacing 4
+                                    use wysiwyg_edit_input_row(suffix="sec")
+                            # Any current value no preset button represents
+                            # (author's own transition OR a custom dissolve
+                            # time like 0.75s) stays visible as text -
+                            # otherwise the row would look like "None".
+                            $ _cur_with_is_preset = any(_cur_with_key == wysiwyg_with_preset_key(_p[1]) for _p in WYSIWYG_WITH_PRESETS)
+                            if _cur_with and not _cur_with_is_preset:
+                                text wysiwyg_wrap_path("with " + str(_cur_with)) style "wysiwyg_value_text"
+                            if wysiwyg_char_with_dirty(_selected_char):
+                                $ _with_restore_label = ("Restore original (with " + wysiwyg_short_expr(_orig_with) + ")") if _orig_with else "Restore original (no transition)"
+                                textbutton wysiwyg_ui_text(_with_restore_label) style "wysiwyg_button" xminimum 0 action Function(wysiwyg_set_with_expr, _sel_tag, _orig_with) tooltip (wysiwyg_ui_text("with " + str(_orig_with)) if _orig_with else None)
+
+                            use wysiwyg_scene_with_section
                 vbar value YScrollValue("wys_char_controls") style "wysiwyg_vbar"
         else:
             if wysiwyg_char_page == "add":
@@ -4237,27 +5175,76 @@ screen wysiwyg_p_characters():
                     padding (8, 8)
                     xfill True
                     text "Select a character from On Scene." style "wysiwyg_small_text"
+                if wysiwyg_scene_with:
+                    # Same scrolling treatment as the character controls:
+                    # on a short window the section must scroll, not run
+                    # off the bottom of the panel.
+                    side "c r":
+                        viewport:
+                            id "wys_scene_with"
+                            mousewheel True
+                            ysize _mid_h
+                            xfill True
+                            vbox:
+                                spacing 8
+                                xfill True
+                                use wysiwyg_scene_with_section
+                        vbar value YScrollValue("wys_scene_with") style "wysiwyg_vbar"
 
 # Add-sprite browser: names come only from files enumerated under
 # game/images/ - there is no path input, so nothing outside that folder
 # can be picked.
+# Hovering a name feeds the floating preview rendered by the main editor
+# screen (rendering it here would clip it inside the panel viewport).
+screen wysiwyg_p_browser_row(row):
+    if row.get("problem"):
+        vbox:
+            spacing 0
+            text row.get("name_wrapped", "") style "wysiwyg_small_text"
+            text row.get("problem_line", "") style "wysiwyg_small_text"
+    else:
+        vbox:
+            spacing 0
+            textbutton wysiwyg_ui_text(row.get("name", "")) style "wysiwyg_button" xfill True action Function(wysiwyg_add_character, row.get("name")) hovered SetVariable("wysiwyg_browser_hover", row) unhovered SetVariable("wysiwyg_browser_hover", None)
+            text row.get("file_wrapped", "") style "wysiwyg_small_text"
+
 screen wysiwyg_p_add_browser():
+    $ _ui_s = wysiwyg_ui_scale()
     text "Add sprite from game/images/" style "wysiwyg_text" bold True
-    text "Pick a file; the sprite appears mid-screen. Save Changes writes the show line into the script." style "wysiwyg_small_text"
+    text "Pick a file; the sprite appears mid-screen. Hover a name to preview the image. Save Changes writes the show line into the script." style "wysiwyg_small_text"
     $ _rows = WYSIWYG_RUNTIME.image_browser or []
     if not _rows:
         text "No image files found in game/images/." style "wysiwyg_small_text"
-    for _row in _rows:
-        if _row.get("problem"):
-            vbox:
-                spacing 0
-                text wysiwyg_ui_text(_row.get("name", "")) style "wysiwyg_small_text"
-                text wysiwyg_ui_text("cannot add: " + str(_row.get("problem")) + "  [" + str(_row.get("file")) + "]") style "wysiwyg_small_text"
+    else:
+        hbox:
+            spacing 6
+            text "Search" style "wysiwyg_small_text" yalign 0.5
+            frame:
+                background Solid("#101418cc")
+                padding (6, 2)
+                xsize int(200 * _ui_s)
+                if wysiwyg_confirm_save or wysiwyg_confirm_close:
+                    # Frozen with the rest of the panel: a live input would
+                    # keep the caret and eat keystrokes behind the backdrop.
+                    text wysiwyg_ui_text(wysiwyg_browser_filter) style "wysiwyg_small_text"
+                else:
+                    input value VariableInputValue("wysiwyg_browser_filter") length 40 pixel_width int(188 * _ui_s) style "wysiwyg_small_text"
+            if wysiwyg_browser_filter:
+                textbutton "Clear" style "wysiwyg_button" action SetVariable("wysiwyg_browser_filter", "")
+        $ _groups = wysiwyg_browser_groups(_rows, wysiwyg_browser_filter)
+        if str(wysiwyg_browser_filter or "").strip():
+            $ _matches = _groups[0][1]
+            text (str(len(_matches)) + " of " + str(len(_rows)) + " file(s) match") style "wysiwyg_small_text"
+            for _row in _matches:
+                use wysiwyg_p_browser_row(_row)
         else:
-            vbox:
-                spacing 0
-                textbutton wysiwyg_ui_text(_row.get("name", "")) style "wysiwyg_button" xfill True action Function(wysiwyg_add_character, _row.get("name"))
-                text wysiwyg_ui_text(_row.get("file", "")) style "wysiwyg_small_text"
+            for _prefix, _group_rows in _groups:
+                $ _glabel = "other" if _prefix == WYSIWYG_BROWSER_UNGROUPED else _prefix
+                $ _gopen = (_prefix in wysiwyg_browser_open_groups)
+                textbutton (("- " if _gopen else "+ ") + wysiwyg_ui_text(_glabel) + " (" + str(len(_group_rows)) + ")") style "wysiwyg_button" xfill True action Function(wysiwyg_toggle_browser_group, _prefix)
+                if _gopen:
+                    for _row in _group_rows:
+                        use wysiwyg_p_browser_row(_row)
 
 # Right-side panel, Show Code mode: original source lines next to the
 # lines Save Changes would write.
@@ -4286,8 +5273,8 @@ screen wysiwyg_p_code():
                         text "What is currently in the .rpy file." style "wysiwyg_small_text"
                         if wysiwyg_bg_source:
                             text "Scene" style "wysiwyg_small_text"
-                            text wysiwyg_ui_text(wysiwyg_bg_source.get("file") + ":" + str(wysiwyg_bg_source.get("line"))) style "wysiwyg_small_text"
-                            text wysiwyg_ui_text(wysiwyg_source_line_text(wysiwyg_bg_source.get("file"), wysiwyg_bg_source.get("line"))) style "wysiwyg_small_text" xsize 160
+                            text wysiwyg_wrap_path(wysiwyg_bg_source.get("file") + ":" + str(wysiwyg_bg_source.get("line"))) style "wysiwyg_small_text"
+                            text wysiwyg_wrap_path(wysiwyg_source_line_text(wysiwyg_bg_source.get("file"), wysiwyg_bg_source.get("line"))) style "wysiwyg_small_text" xsize 160
                         elif wysiwyg_bg:
                             text "Scene" style "wysiwyg_small_text"
                             text "No tracked background source line." style "wysiwyg_small_text"
@@ -4300,10 +5287,10 @@ screen wysiwyg_p_code():
                                 xfill True
                                 vbox:
                                     spacing 4
-                                    text wysiwyg_ui_text(_wch.get("image", "")) style "wysiwyg_small_text"
+                                    text wysiwyg_wrap_path(_wch.get("image", "")) style "wysiwyg_small_text"
                                     if _wch.get("source_file"):
-                                        text wysiwyg_ui_text(_wch.get("source_file") + ":" + str(_wch.get("source_line"))) style "wysiwyg_small_text"
-                                        text wysiwyg_ui_text(wysiwyg_source_line_text(_wch.get("source_file"), _wch.get("source_line"))) style "wysiwyg_small_text" xsize 148
+                                        text wysiwyg_wrap_path(_wch.get("source_file") + ":" + str(_wch.get("source_line"))) style "wysiwyg_small_text"
+                                        text wysiwyg_wrap_path(wysiwyg_source_line_text(_wch.get("source_file"), _wch.get("source_line"))) style "wysiwyg_small_text" xsize 148
                                     else:
                                         text "No tracked show source line." style "wysiwyg_small_text"
                 frame:
@@ -4317,7 +5304,7 @@ screen wysiwyg_p_code():
                         text "What Save Changes will write back." style "wysiwyg_small_text"
                         if wysiwyg_bg:
                             text "Scene" style "wysiwyg_small_text"
-                            text wysiwyg_ui_text(wysiwyg_scene_line()) style "wysiwyg_small_text" xsize 160
+                            text wysiwyg_wrap_path(wysiwyg_scene_line()) style "wysiwyg_small_text" xsize 160
                         for _wch in wysiwyg_chars:
                             $ _selected = (_wch.get("tag") == wysiwyg_selected_tag)
                             $ _card_bg = Solid("#2d6f9588") if _selected else Solid("#00000044")
@@ -4327,11 +5314,22 @@ screen wysiwyg_p_code():
                                 xfill True
                                 vbox:
                                     spacing 4
-                                    text wysiwyg_ui_text(_wch.get("image")) style "wysiwyg_small_text"
+                                    text wysiwyg_wrap_path(_wch.get("image")) style "wysiwyg_small_text"
                                     if _wch.get("locked"):
-                                        text wysiwyg_ui_text("locked (" + str(_wch.get("locked")) + ") - never rewritten") style "wysiwyg_small_text" xsize 148
+                                        text wysiwyg_wrap_path("locked (" + str(_wch.get("locked")) + ") - never rewritten") style "wysiwyg_small_text" xsize 148
+                                    elif _wch.get("pending_hide"):
+                                        text wysiwyg_wrap_path("hide " + str(_wch.get("tag")) + "  (inserted before the current statement)") style "wysiwyg_small_text" xsize 148
                                     else:
-                                        text wysiwyg_ui_text(wysiwyg_position_line_for_char(_wch)) style "wysiwyg_small_text" xsize 148
+                                        text wysiwyg_wrap_path(wysiwyg_position_line_for_char(_wch)) style "wysiwyg_small_text" xsize 148
+                        if wysiwyg_scene_with_dirty(wysiwyg_scene_with):
+                            frame:
+                                background Solid("#00000044")
+                                padding (6, 6)
+                                xfill True
+                                vbox:
+                                    spacing 4
+                                    text "Scene reveal" style "wysiwyg_small_text"
+                                    text wysiwyg_wrap_path("with " + str(wysiwyg_scene_with.get("expr")) + "  (rewrites " + str(wysiwyg_scene_with.get("file")) + ":" + str(wysiwyg_scene_with.get("line")) + ")") style "wysiwyg_small_text" xsize 148
 
 init 999 python:
     wysiwyg_init()

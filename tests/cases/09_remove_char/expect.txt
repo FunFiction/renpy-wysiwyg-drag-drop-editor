@@ -1,0 +1,23 @@
+MATCH IMPORT: Imported 2 character\(s\)
+NOMATCH EXC
+MATCH MARK: 'alpha' marked for removal
+# marking + closing without saving leaves the file byte-identical
+MATCH CLOSE-NO-SAVE-IDENTICAL: True
+# a pending sprite is discarded on the spot; the next save writes nothing
+MATCH DISCARD: Discarded unsaved sprite 'hero'
+MATCH SAVE-AFTER-DISCARD: No changes to save
+MATCH DISCARD-LEAK: \[\]
+MATCH UNDO-REMOVE-SAVE: No changes to save
+MATCH REMOVE-SAVE: Saved 1 changed line\(s\), verified
+# the removed character left the editor's scene list
+MATCH STILL-TRACKED: \['beta'\]
+# re-adding after removal lands below the hide, at the paused statement
+MATCH READD-SAVE: Saved 1 changed line\(s\), verified
+# close gate: unsaved edits open the confirmation; a second request
+# (F5's keyboard answer) discards and closes
+MATCH CLOSE-GATE: active=True \['alpha \(moved/edited\)'\]
+MATCH CLOSE-GATE-DISCARD: active=False box=None
+# hide above the pause, re-added show right below it; the original show stays
+FILEMATCH script.rpy (?m)^    hide alpha\n    show alpha at Transform\(.*\)\n    \$ selftest\(\)$
+FILEMATCH script.rpy show alpha at Transform\(xpos=300
+FILENOMATCH script.rpy hide beta

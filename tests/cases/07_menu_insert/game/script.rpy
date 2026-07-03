@@ -1,7 +1,8 @@
 # Insertion while the game is paused on a menu: the new show line must
-# land right above `menu:` at the same indent, and the file must still
-# parse. The self-test fires from a timer screen because a python
-# statement cannot run while a menu is waiting for input.
+# land right above the earliest tracked show at the same indent (joining
+# the scene's reveal), and the file must still parse. The self-test fires
+# from a timer screen because a python statement cannot run while a menu
+# is waiting for input.
 
 define config.developer = True
 

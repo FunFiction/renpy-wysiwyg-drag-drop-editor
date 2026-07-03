@@ -24,9 +24,10 @@ Ren'Py SDK (default: the 8.5.3 SDK path, or the RENPY_SDK env var).
 | 03_line_loop | picking the truly last-executed source line in a looping label |
 | 04_snapshot_restore | closing without saving restores the exact scene; closing after a save shows the saved state |
 | 05_backups | one backup per save, rotation, tree mirroring game/, locked characters never written |
-| 06_add_sprite | browser limited to game/images/, bad names blocked, discard leaves no trace, inserts in add order |
+| 06_add_sprite | browser limited to game/images/, bad names blocked, prefix grouping and name/path filtering, discard leaves no trace, inserts in add order above the earliest tracked show (uncertain source lines fall back to the paused statement), `with` presets insert at the paused statement, source carryover across a wiped line log, uncertain-save confirmation gate, standalone scene `with` detection and rewrite (trailing comment stripped from the expression and preserved by the rewrite) |
 | 07_menu_insert | inserting a new sprite while the game waits on a `menu:` |
 | 08_clean_save | a save with no edits leaves files byte-for-byte identical |
+| 09_remove_char | removing characters: `hide` inserted above the paused statement, original show untouched, pending sprites discarded traceless, undo remove, close-without-save leaves the file identical, close gate (unsaved edits open a confirmation; a second request discards and closes) |
 
 Ren'Py opens a real window for a few seconds per case; the whole suite
 takes about a minute.

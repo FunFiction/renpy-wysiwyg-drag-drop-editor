@@ -8,6 +8,8 @@ NOMATCH EXC
 MATCH PAUSED-AT: 'menu:'
 MATCH ADD: Tag 'hero' is already tracked
 MATCH SAVE: No changes to save
-# exactly one inserted line, directly above menu: at the same indent
-FILEMATCH script.rpy (?m)^    show hero happy at Transform\(.*\)\n    menu:$
+# exactly one inserted line, directly above the earliest tracked show at
+# the same indent; the menu statement itself stays untouched
+FILEMATCH script.rpy (?m)^    show hero happy at Transform\(.*\)\n    show existing at
+FILEMATCH script.rpy (?m)^    show screen autotest\n    menu:$
 FILENOMATCH script.rpy (?m)show hero happy.*\n.*show hero happy
