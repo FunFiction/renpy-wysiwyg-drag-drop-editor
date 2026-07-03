@@ -80,7 +80,7 @@ init -2 python:
     import time
     import zlib
 
-    WYSIWYG_VERSION = "0.2.0"
+    WYSIWYG_VERSION = "0.3.0"
     WYSIWYG_BLACKLIST = set(["black", "white", "text", "vtext", "side", "icon", "ui", "button"])
     WYSIWYG_ALPHA_CACHE = {}
 
