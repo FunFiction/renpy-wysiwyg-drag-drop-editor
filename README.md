@@ -202,9 +202,10 @@ MIT — see [LICENSE](LICENSE). In practice:
 
 ### 1.0.0 (2026-07-04)
 
-Feature-complete release; no functional changes since 0.3.0.
+Feature-complete release; the save machinery is unchanged since 0.3.0.
 
 - MIT license added, with an explicit no-attribution grant on the generated `wysiwyg_motion_fx.rpy`.
+- The Show Code panel no longer previews lines the save would not write: unchanged characters read "unchanged - will not be written", and the scene line is marked as never rewritten instead of being shown as a stripped-down preview. What the panel displays now branches on the same predicate the save loop uses.
 - Version bumped to 1.0.0 to mark the feature set as final: fixes will keep coming, new features are not planned.
 
 ### 0.3.0 (2026-07-03)
