@@ -220,7 +220,7 @@ Feature-complete release; the save machinery is unchanged since 0.3.0.
 
 ### 0.3.0 (2026-07-03)
 
-This release replaces the 0.2.1 line published in June. The safety work from 0.2.1 (developer gate, pre-save line verification, restore after autoreload) is included here in a rebuilt and extended form; everything below is new since then. The whole release went through a internal review (21 findings) and four multi-agent review cycles, all findings fixed.
+This release replaces the 0.2.1 line published in June. The safety work from 0.2.1 (developer gate, pre-save line verification, restore after autoreload) is included here in a rebuilt and extended form; everything below is new since then. The whole release went through a internal style review (21 findings) and four further full review passes, all findings fixed.
 
 Added:
 
