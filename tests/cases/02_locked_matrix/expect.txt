@@ -4,7 +4,7 @@ MATCH TAG a1: locked="uses transform 'wobble'"
 MATCH TAG a2: locked="uses transform 'Transform\(xpos=100, ypos=100, function=slow_fn\)'"
 MATCH TAG a3: locked="uses transform 'wobble'"
 MATCH TAG a4: locked=None
-MATCH TAG a5: locked='animated ATL block'
+MATCH TAG a5: locked='animated or unsupported ATL block'
 MATCH TAG a6: locked=None
 MATCH TAG a7: locked="uses transform 'Transform\(xpos=500, ypos=100, zoom=1\.5\)'"
 MATCH TAG a8: locked="uses transform 'Transform\(xpos=600, ypos=100, alpha=\.5\)'"

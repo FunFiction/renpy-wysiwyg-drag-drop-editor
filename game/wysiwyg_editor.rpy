@@ -10,8 +10,8 @@
 #   - "Import Scene" reads the characters currently shown on the master layer,
 #     finds the exact `show` statement in the .rpy source that displayed each
 #     of them, and lets you drag / rotate / scale / filter them live.
-#   - "Save Changes" rewrites those exact source lines in place (a one-time
-#     .wysiwyg.bak backup of each touched file is created automatically).
+#   - "Save Changes" rewrites those exact source lines in place (every save
+#     first copies each touched file into game/wysiwyg_backups/).
 #   - Closing the editor restores the scene to its last saved/imported state,
 #     so no unsaved preview changes ever leak into the running game.
 #
@@ -93,6 +93,10 @@ init -2 python:
             # recently" in games that loop labels.
             self.exec_log = []
             self.exec_log_registered = False
+            # (file, line) -> line text, for the code panel only: screens
+            # re-evaluate on every interaction restart, and re-reading big
+            # .rpy files from disk each time makes the whole UI stutter.
+            self.source_text_cache = {}
 
     WYSIWYG_RUNTIME = _WysiwygRuntime()
 
@@ -133,13 +137,32 @@ init -2 python:
             return
         if len(log) > 4000:
             del log[:2000]
+        # The engine's own line log is unbounded and pays a linear dedup
+        # scan per executed statement (execution.py); a long ctrl-skip
+        # session would get progressively slower. Keep it windowed the
+        # same way as exec_log - imports only need the recent scene.
+        try:
+            engine_log = renpy.game.context().line_log
+            if len(engine_log) > 4000:
+                del engine_log[:2000]
+        except Exception:
+            pass
 
     def wysiwyg_game_dir():
         return getattr(config, "gamedir", renpy.config.gamedir)
 
     def wysiwyg_log_debug(msg):
         try:
-            with open(os.path.join(wysiwyg_game_dir(), "wysiwyg_debug.txt"), "a") as f:
+            path = os.path.join(wysiwyg_game_dir(), "wysiwyg_debug.txt")
+            # Cap the log so weeks of sessions cannot grow it without
+            # bound; utf-8 with errors="replace" so non-ASCII source lines
+            # (the games that need diagnostics most) never lose an entry.
+            try:
+                if os.path.getsize(path) > 2 * 1024 * 1024:
+                    os.remove(path)
+            except OSError:
+                pass
+            with io.open(path, "a", encoding="utf-8", errors="replace") as f:
                 f.write(str(msg) + "\n")
         except Exception:
             pass
@@ -491,6 +514,19 @@ init -2 python:
         except Exception:
             pass
         return ""
+
+    def wysiwyg_source_line_text_cached(filename, line):
+        # Code-panel path only: screens re-evaluate on every interaction
+        # restart, and re-reading a large .rpy from disk per hover makes
+        # the whole UI stutter. The cache is dropped on import and after
+        # every save (wysiwyg_clear_editor_state clears it too), so it can
+        # never outlive the lines it mirrors. Import/save paths must keep
+        # calling the uncached read.
+        key = (wysiwyg_norm_path(filename or ""), int(line or 0))
+        cache = WYSIWYG_RUNTIME.source_text_cache
+        if key not in cache:
+            cache[key] = wysiwyg_source_line_text(filename, line)
+        return cache[key]
 
     # Parses an editor-style `show ... at Transform(...)` source line back
     # into a dict of transform values. Lines not written by this editor
@@ -1251,7 +1287,7 @@ init -2 python:
         adjusted_x = cx - w / 2.0
 
         if abs(wysiwyg_float(char.get("x", 0.0), 0.0) - adjusted_x) < 0.01:
-            wysiwyg_set_status("Already on Ren'Py " + str(target_name) + ".")
+            wysiwyg_set_status("Already at the " + str(target_name) + " position.")
             return
 
         wysiwyg_push_undo(char)
@@ -1260,7 +1296,7 @@ init -2 python:
         char["parsed_center_x"] = cx
         char["parsed_x"] = True
         store.wysiwyg_saved_runtime = False
-        wysiwyg_set_status("Placed on Ren'Py " + str(target_name) + ".")
+        wysiwyg_set_status("Placed at the " + str(target_name) + " position.")
 
     def wysiwyg_current_image_name(tag):
         try:
@@ -1489,6 +1525,7 @@ init -2 python:
     # measures live render bounds, and builds the editable character dicts
     # (current values + original_* copies used by the reset buttons).
     def wysiwyg_import_scene():
+        WYSIWYG_RUNTIME.source_text_cache = {}
         had_existing_import = bool(store.wysiwyg_chars or store.wysiwyg_bg)
         dropped_pending = len([c for c in store.wysiwyg_chars if c.get("pending_insert")])
         dropped_hides = len([c for c in store.wysiwyg_chars if c.get("pending_hide")])
@@ -1771,9 +1808,9 @@ init -2 python:
             if uncertain:
                 message += " " + str(uncertain) + " with uncertain source line - verify in Show Code before saving."
             if dropped_pending:
-                message += " " + str(dropped_pending) + " added-but-unsaved sprite(s) were discarded."
+                message += " Discarded " + str(dropped_pending) + " added-but-unsaved sprite(s)."
             if dropped_hides:
-                message += " " + str(dropped_hides) + " unsaved removal mark(s) were discarded."
+                message += " Discarded " + str(dropped_hides) + " unsaved removal mark(s)."
             wysiwyg_set_status(message)
         else:
             wysiwyg_set_status("No editable scene/show lines found. Advance the scene, then press Import Scene.")
@@ -1789,7 +1826,11 @@ init -2 python:
         if not parts:
             return "empty name"
         if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", parts[0]):
-            return "tag must start with a letter"
+            return "tag must start with a letter or underscore"
+        if parts[0] in WYSIWYG_BLACKLIST:
+            # The importer skips these tags, so a sprite added under one
+            # could never be re-imported for editing later.
+            return "tag '" + parts[0] + "' is reserved by the editor - rename the file"
         for part in parts[1:]:
             if not re.match(r"^[A-Za-z0-9_]+$", part):
                 return "bad attribute '" + part + "'"
@@ -2594,7 +2635,7 @@ init -2 python:
             try:
                 renpy.scriptedit.ensure_loaded(elided)
                 if not wysiwyg_atl_block_is_static(elided, int(line)):
-                    return "animated ATL block"
+                    return "animated or unsupported ATL block"
             except Exception:
                 return "unreadable ATL block"
         for expr in (data.get("at_list_exprs") or []):
@@ -3635,6 +3676,9 @@ transform wysiwyg_blink_motion(strength=1.0):
             # now on closing reconstructs from the saved values instead.
             WYSIWYG_RUNTIME.master_snapshot = None
 
+        # Written (or restored) files invalidate the code panel's cache.
+        WYSIWYG_RUNTIME.source_text_cache = {}
+
         if errors:
             # The status bar shows two errors and then disappears; the log
             # keeps all of them, so "did that save actually run?" stays
@@ -3644,8 +3688,10 @@ transform wysiwyg_blink_motion(strength=1.0):
             wysiwyg_set_status("Saved " + str(changed) + " line(s), errors: " + "; ".join(errors[:2]))
         elif changed:
             wysiwyg_set_status("Saved " + str(changed) + " changed line(s), verified. Backups in game/wysiwyg_backups/.")
-        elif skipped_clean and store.wysiwyg_chars:
+        elif skipped_clean:
             wysiwyg_set_status("No changes to save - " + str(skipped_clean) + " character(s) match their source lines.")
+        elif store.wysiwyg_chars:
+            wysiwyg_set_status("No changes to save - all imported characters are locked.")
         else:
             wysiwyg_set_status("Nothing to save. Import Scene first.")
 
@@ -3956,7 +4002,7 @@ transform wysiwyg_blink_motion(strength=1.0):
         elif field in ("withsec", "scenewithsec"):
             value = wysiwyg_float(text.replace(",", "."), None)
             if value is None or value <= 0 or value > 30:
-                wysiwyg_set_status("Dissolve time must be a number of seconds (0-30).")
+                wysiwyg_set_status("Dissolve time must be greater than 0, up to 30 seconds.")
                 return
             expr = "Dissolve(" + wysiwyg_fmt_float(value, 2) + ")"
             if field == "withsec":
@@ -4003,7 +4049,7 @@ transform wysiwyg_blink_motion(strength=1.0):
         char["parsed_x"] = True
         char["parsed_y"] = True
         store.wysiwyg_saved_runtime = False
-        wysiwyg_set_status("Reset selected character to imported position.")
+        wysiwyg_set_status("Reset selected character to its last imported/saved position.")
 
     def wysiwyg_reset_selected_position():
         wysiwyg_reset_position_for(store.wysiwyg_selected_tag)
@@ -4026,6 +4072,12 @@ transform wysiwyg_blink_motion(strength=1.0):
         wysiwyg_set_status("Editor cleared. Unsaved moves were discarded.")
 
     def wysiwyg_clear_editor_state():
+        # If a mid-session error (and the error screen's Rollback) orphaned
+        # the skipping stash, restore it here rather than cementing False.
+        if WYSIWYG_RUNTIME.prev_allow_skipping is not None and not store.wysiwyg_active:
+            config.allow_skipping = WYSIWYG_RUNTIME.prev_allow_skipping
+            WYSIWYG_RUNTIME.prev_allow_skipping = None
+        WYSIWYG_RUNTIME.source_text_cache = {}
         WYSIWYG_RUNTIME.master_snapshot = None
         store.wysiwyg_bg = None
         store.wysiwyg_bg_source = None
@@ -4249,7 +4301,12 @@ transform wysiwyg_blink_motion(strength=1.0):
 # in the game. The editor itself is the modal wysiwyg_main screen.
 screen wysiwyg_hotkey():
     zorder 300
-    key "K_F5" action Function(wysiwyg_request_close)
+    # The key is only bound while the editor can actually do something:
+    # an unconditional Key would eat F5 (behavior.py raises IgnoreEvent
+    # even for a None action) in games that bind it themselves - including
+    # shipped builds where the author forgot to delete this file.
+    if wysiwyg_active or wysiwyg_enabled():
+        key "K_F5" action Function(wysiwyg_request_close)
     if wysiwyg_active:
         key "K_h" action NullAction()
         use wysiwyg_main
@@ -4330,9 +4387,16 @@ screen wysiwyg_preview_add(ch, px, py):
 # the selected one sits inside a drag whose geometry matches the renderer
 # (see wysiwyg_render_box / wysiwyg_drag_pos).
 screen wysiwyg_main():
+    # NOTE: this modal has no effect (the screen is only ever transcluded
+    # into wysiwyg_hotkey via `use`, and the engine reads modality from the
+    # shown screen only). The real input protection is the key traps below.
     modal True
     zorder 250
     key "dismiss" action NullAction()
+    # Esc / right-click would open the game menu, where Load or Main Menu
+    # silently discards unsaved editor work with no close confirmation.
+    key "game_menu" action Function(wysiwyg_set_status, "Close the editor (F5) before opening the game menu.")
+    key "hide_windows" action NullAction()
     key "rollback" action NullAction()
     key "rollforward" action NullAction()
     key "skip" action NullAction()
@@ -4477,7 +4541,7 @@ screen wysiwyg_main():
 
     # Box for saves that would rewrite uncertain source lines.
     if wysiwyg_confirm_save:
-        use wysiwyg_confirm_box("Save with uncertain source lines?", wysiwyg_ui_text("These characters were matched by scanning the script, not by watching it run: " + ", ".join(wysiwyg_confirm_save) + ". The editor could rewrite a wrong line.")):
+        use wysiwyg_confirm_box("Save with uncertain source lines?", wysiwyg_ui_text("These characters were matched from an ambiguous or scanned source, not from a verified execution order: " + ", ".join(wysiwyg_confirm_save) + ". The editor could rewrite a wrong line.")):
             text "Show Code displays exactly which lines will be rewritten - check them there first." style "wysiwyg_small_text"
             hbox:
                 spacing 8
@@ -4487,22 +4551,31 @@ screen wysiwyg_main():
 
     # Box for closing the editor with unsaved edits.
     if wysiwyg_confirm_close:
-        use wysiwyg_confirm_box("Close without saving?", wysiwyg_ui_text("Unsaved changes: " + ", ".join(wysiwyg_confirm_close) + ". Closing discards them - nothing has been written to any file. F5 discards and closes; Esc goes back.")):
+        use wysiwyg_confirm_box("Close without saving?", wysiwyg_ui_text("Unsaved changes: " + ", ".join(wysiwyg_confirm_close) + ". Closing discards them - these changes have not been written to any file. F5 discards and closes; Esc goes back.")):
             hbox:
                 spacing 8
                 textbutton "Save Changes" style "wysiwyg_button" action Function(wysiwyg_confirm_close_save)
                 textbutton "Discard & Close" style "wysiwyg_danger_button" action Function(wysiwyg_confirm_close_discard)
                 textbutton "Back" style "wysiwyg_button" action SetVariable("wysiwyg_confirm_close", None)
 
-    if wysiwyg_status:
+    # Hover help for buttons that declare a tooltip (the Del warning, full
+    # names of truncated characters, exact-position hints) shares the
+    # status bar's corner, stacked above the status line when both show.
+    $ _wysiwyg_tt = GetTooltip()
+    if wysiwyg_status or _wysiwyg_tt:
         frame:
             background Solid("#000000aa")
             padding (10, 6)
             xalign 0.0
             yalign 1.0
-            # Long messages (paths, per-file errors) wrap instead of
-            # running under the side panel.
-            text wysiwyg_wrap_path(wysiwyg_status) style "wysiwyg_small_text" xmaximum int(config.screen_width * 0.55)
+            vbox:
+                spacing 4
+                if _wysiwyg_tt:
+                    text wysiwyg_wrap_path(_wysiwyg_tt) style "wysiwyg_small_text" xmaximum int(config.screen_width * 0.55)
+                if wysiwyg_status:
+                    # Long messages (paths, per-file errors) wrap instead
+                    # of running under the side panel.
+                    text wysiwyg_wrap_path(wysiwyg_status) style "wysiwyg_small_text" xmaximum int(config.screen_width * 0.55)
 
 screen wysiwyg_grid_overlay():
     $ _w = int(config.screen_width)
@@ -4658,7 +4731,7 @@ screen wysiwyg_p_characters():
                                 textbutton "▲" style "wysiwyg_button" xminimum 44 action Function(wysiwyg_nudge_selected, 0, -wysiwyg_nudge_step)
                                 textbutton "▼" style "wysiwyg_button" xminimum 44 action Function(wysiwyg_nudge_selected, 0, wysiwyg_nudge_step)
                                 textbutton ("Step " + str(wysiwyg_nudge_step) + "px") style "wysiwyg_button" action SetVariable("wysiwyg_nudge_step", 10 if wysiwyg_nudge_step == 1 else 1)
-                            text "Arrow keys move too (Shift = 10px)." style "wysiwyg_small_text"
+                            text "Arrow keys move too while the sprite is visible (Shift = 10px)." style "wysiwyg_small_text"
                             hbox:
                                 spacing 6
                                 textbutton "At Left" style "wysiwyg_button" action Function(wysiwyg_place_selected_on_x_target, "left")
@@ -4829,12 +4902,16 @@ screen wysiwyg_p_code():
                 xfill True
                 text "Nothing imported yet. Click Import Scene first." style "wysiwyg_small_text"
         else:
+            # Column and text widths scale with the game's virtual
+            # resolution like every other panel dimension - fixed pixels
+            # overflow the panel below 1080p.
+            $ _ui_s = wysiwyg_ui_scale()
             hbox:
                 spacing 10
                 frame:
                     background Solid("#00000066")
                     padding (8, 8)
-                    xsize 180
+                    xsize int(180 * _ui_s)
                     yfill True
                     vbox:
                         spacing 6
@@ -4843,7 +4920,7 @@ screen wysiwyg_p_code():
                         if wysiwyg_bg_source:
                             text "Scene" style "wysiwyg_small_text"
                             text wysiwyg_wrap_path(wysiwyg_bg_source.get("file") + ":" + str(wysiwyg_bg_source.get("line"))) style "wysiwyg_small_text"
-                            text wysiwyg_wrap_path(wysiwyg_source_line_text(wysiwyg_bg_source.get("file"), wysiwyg_bg_source.get("line"))) style "wysiwyg_small_text" xsize 160
+                            text wysiwyg_wrap_path(wysiwyg_source_line_text_cached(wysiwyg_bg_source.get("file"), wysiwyg_bg_source.get("line"))) style "wysiwyg_small_text" xsize int(160 * _ui_s)
                         elif wysiwyg_bg:
                             text "Scene" style "wysiwyg_small_text"
                             text "No tracked background source line." style "wysiwyg_small_text"
@@ -4857,13 +4934,13 @@ screen wysiwyg_p_code():
                                     text wysiwyg_wrap_path(_wch.get("image", "")) style "wysiwyg_small_text"
                                     if _wch.get("source_file"):
                                         text wysiwyg_wrap_path(_wch.get("source_file") + ":" + str(_wch.get("source_line"))) style "wysiwyg_small_text"
-                                        text wysiwyg_wrap_path(wysiwyg_source_line_text(_wch.get("source_file"), _wch.get("source_line"))) style "wysiwyg_small_text" xsize 148
+                                        text wysiwyg_wrap_path(wysiwyg_source_line_text_cached(_wch.get("source_file"), _wch.get("source_line"))) style "wysiwyg_small_text" xsize int(148 * _ui_s)
                                     else:
                                         text "No tracked show source line." style "wysiwyg_small_text"
                 frame:
                     background Solid("#00000066")
                     padding (8, 8)
-                    xsize 180
+                    xsize int(180 * _ui_s)
                     yfill True
                     vbox:
                         spacing 6
@@ -4871,7 +4948,7 @@ screen wysiwyg_p_code():
                         text "What Save Changes will write back." style "wysiwyg_small_text"
                         if wysiwyg_bg:
                             text "Scene" style "wysiwyg_small_text"
-                            text "unchanged - the scene line is never rewritten" style "wysiwyg_small_text" xsize 160
+                            text "unchanged - the scene line is never rewritten" style "wysiwyg_small_text" xsize int(160 * _ui_s)
                         for _wch in wysiwyg_chars:
                             $ _save_kind = wysiwyg_char_save_kind(_wch)
                             frame:
@@ -4882,15 +4959,17 @@ screen wysiwyg_p_code():
                                     spacing 4
                                     text wysiwyg_wrap_path(_wch.get("image")) style "wysiwyg_small_text"
                                     if _wch.get("locked"):
-                                        text wysiwyg_wrap_path("locked (" + str(_wch.get("locked")) + ") - never rewritten") style "wysiwyg_small_text" xsize 148
+                                        text wysiwyg_wrap_path("locked (" + str(_wch.get("locked")) + ") - never rewritten") style "wysiwyg_small_text" xsize int(148 * _ui_s)
+                                    elif _save_kind in ("edited", "removed") and wysiwyg_norm_path(_wch.get("source_file") or "") in WYSIWYG_RUNTIME.failed_files:
+                                        text "saving to this file is disabled after a failed write - restart the game" style "wysiwyg_small_text" xsize int(148 * _ui_s)
                                     elif _save_kind == "removed":
-                                        text wysiwyg_wrap_path("hide " + str(_wch.get("tag")) + "  (inserted before the current statement)") style "wysiwyg_small_text" xsize 148
+                                        text wysiwyg_wrap_path("hide " + str(_wch.get("tag")) + "  (inserted before the current statement)") style "wysiwyg_small_text" xsize int(148 * _ui_s)
                                     elif _save_kind == "added":
-                                        text wysiwyg_wrap_path(wysiwyg_position_line_for_char(_wch) + "  (new line inserted)") style "wysiwyg_small_text" xsize 148
+                                        text wysiwyg_wrap_path(wysiwyg_position_line_for_char(_wch) + "  (new line inserted)") style "wysiwyg_small_text" xsize int(148 * _ui_s)
                                     elif _save_kind is None:
-                                        text "unchanged - will not be written" style "wysiwyg_small_text" xsize 148
+                                        text "unchanged - will not be written" style "wysiwyg_small_text" xsize int(148 * _ui_s)
                                     else:
-                                        text wysiwyg_wrap_path(wysiwyg_position_line_for_char(_wch)) style "wysiwyg_small_text" xsize 148
+                                        text wysiwyg_wrap_path(wysiwyg_position_line_for_char(_wch)) style "wysiwyg_small_text" xsize int(148 * _ui_s)
                         if wysiwyg_scene_with_dirty(wysiwyg_scene_with):
                             frame:
                                 background Solid("#00000044")
@@ -4899,9 +4978,17 @@ screen wysiwyg_p_code():
                                 vbox:
                                     spacing 4
                                     text "Scene reveal" style "wysiwyg_small_text"
-                                    text wysiwyg_wrap_path("with " + str(wysiwyg_scene_with.get("expr")) + "  (rewrites " + str(wysiwyg_scene_with.get("file")) + ":" + str(wysiwyg_scene_with.get("line")) + ")") style "wysiwyg_small_text" xsize 148
+                                    text wysiwyg_wrap_path("with " + str(wysiwyg_scene_with.get("expr")) + "  (rewrites " + str(wysiwyg_scene_with.get("file")) + ":" + str(wysiwyg_scene_with.get("line")) + ")") style "wysiwyg_small_text" xsize int(148 * _ui_s)
 
 init 999 python:
     wysiwyg_init()
     if "wysiwyg_hotkey" not in config.overlay_screens:
         config.overlay_screens.append("wysiwyg_hotkey")
+    # Dev artifacts must never ship: Ren'Py's default build rules would
+    # otherwise package the plaintext script backups and the debug log
+    # into releases (they precede the "**" catch-all, so this works).
+    try:
+        build.classify("game/wysiwyg_backups/**", None)
+        build.classify("game/wysiwyg_debug.txt", None)
+    except Exception:
+        pass

@@ -37,10 +37,10 @@ Instead of editing coordinates in a text editor and relaunching the game to chec
 ## Key Features
 
 - **Live Drag-and-Drop Layout**: Click and drag any sprite on the screen to reposition it instantly.
-- **Direct Source Code Rewriting**: When you click **Save Changes**, the editor locates the exact `show` or `scene` statements that rendered the active sprites (using Ren'Py's execution line log `config.line_log`) and rewrites the parameters in-place inside your `.rpy` files using `renpy.scriptedit`.
+- **Direct Source Code Rewriting**: When you click **Save Changes**, the editor locates the exact `show` statements that rendered the active sprites (using Ren'Py's execution line log `config.line_log`) and rewrites the parameters in-place inside your `.rpy` files using `renpy.scriptedit`. The scene's standalone `with` reveal line can be rewritten too; the `scene` statement itself is never touched.
 - **Automatic Backups + Write Verification**: Before every save, each touched file is backed up into `game/wysiwyg_backups/` (rotated, 10 newest per file plus the session baseline). After every save the whole file is re-parsed with the engine parser. If anything is wrong, the backup comes back automatically on the spot.
 - **Only Changed Lines Are Written**: Characters you did not modify are never rewritten, so untouched statements keep their original transitions, at-lists and formatting.
-- **Animated Characters Are Locked, Not Broken**: A character shown with an animated ATL block or a custom transform is imported as *locked*: it stays live and animated on screen, cannot be dragged, and its source line is never rewritten. Static placements (`at left/center/right`, plain `Transform(...)`, static ATL blocks) stay fully editable.
+- **Animated Characters Are Locked, Not Broken**: A character shown with an animated ATL block or a custom transform is imported as *locked*: it stays live and animated on screen, cannot be dragged, and its source line is never rewritten. Placements the editor can fully round-trip (`at left/center/right`, `Transform(...)` calls and ATL blocks using only position properties) stay editable; anything else is locked rather than risked.
 - **Motion FX are self-contained**: the first save that uses a Motion FX also writes `game/wysiwyg_motion_fx.rpy` with standalone transform definitions, so saved lines keep working even if you remove the editor before release.
 - **Add sprites from `game/images/`**: the "+ Add" button opens a file browser limited to the images folder, the one Ren'Py auto-defines images from and the only one the browser can see. Files are grouped by name prefix (`chloe_*`, `bg_*`), a search box filters by name or path, and hovering an entry shows a floating image preview. Pick a file, drag the sprite into place, and Save Changes inserts a proper `show` line right above the scene's earliest tracked `show`, so the new sprite is revealed by the same transition as the rest of the scene instead of popping in after it (falls back to the paused statement when there is no such anchor). Close without saving and the sprite vanishes without a trace.
 - **Show transition presets (`with`)**: each character has an "Appear (with)" row (None / 0.25s / 0.5s / 1s dissolve / fade) that edits the `with` clause on its show line - both for existing characters and freshly added sprites. Equivalent spellings light up the matching preset (a game's bare `dissolve` selects "0.5s") and clicking an equivalent preset never rewrites the author's text. Any value the preset buttons cannot represent (your own transition, or a custom time like 0.75s) stays visible as highlighted text under the row, so the panel never looks like "None" when a transition is set. A "Restore original" button brings the game's own value back after any change, and an "s..." field takes a custom dissolve time in seconds.
@@ -71,20 +71,20 @@ Instead of editing coordinates in a text editor and relaunching the game to chec
 ## Interface & Controls Reference
 
 ### 1. Global Toolbar (Top)
-- **Characters** (Tab): Selects the character editing panel.
+- **Characters** tab: Selects the character editing panel.
 - **Import Scene**: Scans the active Ren'Py master layer, finds the exact source files and lines, and loads the sprites into the editor.
 - **Save Changes**: Rewrites the mapped lines in your `.rpy` files in-place with the updated `Transform` code.
 - **Undo**: Undoes the last modification (holds up to 50 steps).
 - **Show Code**: Opens the side-by-side code comparison panel to preview modifications before writing to disk.
-- **Grid**: Toggles a 100px-step background alignment grid to help with visual alignment.
+- **Grid**: Toggles a background grid with 100px steps.
 - **Clear Editor**: Resets the editor state, discarding all unsaved transformations.
-- **Close**: Exits the editor and restores the scene to its pre-editor state. With unsaved work it first opens the confirmation described above.
+- **Close**: Exits the editor and restores the scene to its last saved/imported state. With unsaved work it first opens the confirmation described above.
 
 ### 2. Base Controls Panel
-- **Reset Pos**: Restores the character's X and Y coordinates to their initial imported state.
+- **Reset Pos**: Restores the character's X and Y coordinates to their last imported/saved state (a save becomes the new baseline).
 - **Reset Transform**: Restores the character's scale, rotation, and opacity back to the values originally defined in the script.
 - **Defaults**: Resets the character to default parameters (rotation `0`, scale `1.0`, opacity `1.0`).
-- **At Left / At Center / At Right**: Snaps the character to standard Ren'Py horizontal alignments.
+- **At Left / At Center / At Right**: Snaps the character's center to the quarter, half, or three-quarter point of the screen width (note: this is not the same spot as Ren'Py's `left`/`right` transforms, which hug the screen edges).
 - **Flip H / Flip V**: Mirrors the character horizontally or vertically (toggles negative `xzoom` or `yzoom`).
 - **Rotation Slider**: Rotates the character between `-180°` and `180°`.
 - **Linked / Unlinked**: Locks or unlocks the scale aspect ratio. When locked, scaling the X axis scales the Y axis proportionally.
@@ -94,10 +94,10 @@ Instead of editing coordinates in a text editor and relaunching the game to chec
 - **Nudge Step Toggle**: Click the **Step 1px / Step 10px** button to toggle the movement resolution for both the screen buttons and your keyboard's arrow keys.
 
 > [!TIP]
-> **In-place Value Editing**: You can click directly on the **Coordinates label** (`x=... y=...`), the **Rotation angle**, or the **Scale values** in the panel to turn them into manual input fields, and type exact numbers (e.g. `960, 540` for the center position, `45.5` for rotation, `0.85` for scale). **Enter** or the **OK** button commits the value; **Esc**, the **✕**/**Cancel** button, or clicking the same field button again discards it. The custom-seconds fields (`s...`) next to the `with` presets work the same way, and clicking any preset closes a half-typed field.
+> **In-place Value Editing**: You can click directly on the **Coordinates label** (`Center: X, Y`), the **Rotation angle**, or the **Scale values** in the panel to turn them into manual input fields, and type exact numbers (e.g. `960, 540` for the center position, `45.5` for rotation, `0.85` for scale). **Enter** or the **OK** button commits the value; **Esc**, the **✕**/**Cancel** button, or clicking the same field button again discards it. The custom-seconds fields (`s...`) next to the `with` presets work the same way, and clicking any preset closes a half-typed field.
 
 ### 3. Color Filters Panel
-- **Defaults**: Resets all color matrix transformations back to their original values.
+- **Defaults**: Resets all color filters to their neutral values (not to the values from your script - use Undo or re-import for those).
 - **Reset (next to sliders)**: Resets only that specific filter back to its default state.
 - **Blur**: Gaussian blur in pixels (`0px` to `20px`).
 - **Brightness**: Adjusts image brightness matrix.
@@ -126,13 +126,13 @@ Instead of editing coordinates in a text editor and relaunching the game to chec
 3. Click **Import Scene** to read the characters currently shown on screen.
 4. Select a character from the **On Scene** list or click them directly.
 5. Drag the sprite to your desired position. You can also:
-   - Use the **arrow keys** on your keyboard to nudge the sprite by 1px (or hold **Shift** to nudge by 10px).
+   - Use the **arrow keys** on your keyboard to nudge the sprite by the current step (1px by default; hold **Shift** for 10px).
    - Go to **Base Controls** to adjust rotation, scale, opacity, or flip the character.
    - Go to **Color Filters** to add blurs, brightness/contrast adjustments, or hue shifts.
    - Go to **Motion FX** to apply animations.
 6. Click **Show Code** to compare your changes with the original code.
 7. Click **Save Changes** to write the updated coordinates directly to your `.rpy` files.
-8. Click **Close** (or press **F5**) to exit the editor. If anything is still unsaved, a confirmation lists it first; discarding restores the scene to its initial state and leaves every file untouched.
+8. Click **Close** (or press **F5**) to exit the editor. If anything is still unsaved, a confirmation lists it first; discarding restores the scene to its last saved/imported state and writes nothing to any file.
 
 ---
 
@@ -155,21 +155,19 @@ After writing, the editor immediately re-parses the whole file with Ren'Py's own
 To restore an original file manually, replace the modified `.rpy` file with the corresponding `.bak` from `game/wysiwyg_backups/`.
 
 ### Debug log
-The editor appends a line to `game/wysiwyg_debug.txt` for every import, insert, rewrite and save error (`[IMPORT]`, `[INSERT]`, `[HIDE]`, `[SAVE]`, `[SCENE-WITH]`, `[SAVE-ERROR]`). When a save did not do what you expected, this file answers "what did the editor actually write, and where" better than memory does. It grows without bound; delete it whenever you like.
+The editor appends a line to `game/wysiwyg_debug.txt` for every import, insert, rewrite and save error (`[IMPORT]`, `[INSERT]`, `[HIDE]`, `[SAVE]`, `[SCENE-WITH]`, `[SAVE-ERROR]`). When a save did not do what you expected, this file answers "what did the editor actually write, and where" better than memory does. It is written as UTF-8 and starts over automatically past 2 MB; delete it whenever you like. Both this file and `game/wysiwyg_backups/` are excluded from built distributions.
 
 ### Locked (Read-Only) Characters
-Characters whose `show` statement uses an **animated ATL block** (e.g. `linear`, `ease`, `repeat`), a **custom named transform**, or that were shown **from Python code**, are imported as *locked*:
+Characters whose `show` statement uses an **animated or otherwise unsupported ATL block** (e.g. `linear`, `ease`, `repeat`, or properties the editor cannot round-trip, like `zoom` inside a block), a **custom named transform**, or that were shown **from Python code**, are imported as *locked*:
 
 - they stay live on the master layer, so their animation keeps playing while you edit others;
 - they cannot be selected, dragged or reset, and their source line is never rewritten;
 - the On Scene list and Show Code panel state the reason (e.g. `uses transform 'wobble'`).
 
-Static placements are not affected: `at left`, `at center`, `at right`, explicit `Transform(...)` calls and ATL blocks containing only static properties (`xpos`, `ypos`, `zoom`, …) remain fully editable.
+Simple placements are not affected: `at left`, `at center`, `at right`, `Transform(...)` calls and ATL blocks that use only the position properties the editor round-trips (`xpos`, `ypos`, `xanchor`, `xalign`, offsets, …) remain fully editable. Anything beyond that set (a `zoom` or `alpha` inside an ATL block, a variable as a property value) locks the character instead of risking a lossy rewrite.
 
-### Non-interactive Quit Confirmation Block
-If you click the OS window's close **"X"** button to exit the game while the editor overlay is open, Ren'Py's default quit confirmation prompt ("Are you sure you want to quit?") will appear, but you will be unable to click "Yes" or "No". 
-
-This occurs because the active editor screen uses `modal True`, which intercepts all inputs and blocks interaction with the screens underneath it. To close the game, simply close the editor first (by pressing **F5** or clicking **Close**), and you will then be able to interact with the quit prompt.
+### The game menu and quit prompt while the editor is open
+While the editor is open, it deliberately swallows the inputs that would advance or leave the game: dismiss clicks, rollback, skipping, and the game menu (Esc / right-click show a status hint instead). If you click the OS window's close **"X"** button, Ren'Py's quit prompt appears underneath the editor's input traps and cannot be clicked. In all cases: close the editor first (**F5** or **Close**), then use the menu or quit.
 
 ---
 
@@ -183,7 +181,7 @@ Read this section before trusting the tool with a project that has no version co
 - **The preview can be a pixel or two off.** For sprites positioned through one of the game's own transforms that includes zoom, the editor's drag preview is an approximation. The line that gets saved is computed from the live render bounds, so the file is right even when the preview is slightly off.
 - **Do not save/load the game mid-edit.** The snapshot used to restore the scene when you close without saving does not survive a save/load cycle inside the editor session. Close the editor first, then use the game's save/load.
 - **Translations are only partly guarded.** Inserting new lines while a `game/tl/` translation is playing is refused. Editing an existing `show` statement whose source already sits inside `game/tl/` is not blocked; do your editing in the base language.
-- **The quit prompt is unreachable while the editor is open.** Clicking the window's X button shows Ren'Py's quit confirmation underneath the editor's modal overlay, where it cannot be clicked. Close the editor first (F5), then quit. Details in Technical Notes.
+- **The game menu and quit prompt are blocked while the editor is open.** Esc and right-click show a hint instead of the menu (Load/Main Menu would silently discard unsaved editor work), and the window's X button shows a quit prompt that cannot be clicked. Close the editor first (F5), then use the menu or quit. Details in Technical Notes.
 
 ---
 
@@ -205,7 +203,8 @@ MIT — see [LICENSE](LICENSE). In practice:
 Feature-complete release; the save machinery is unchanged since 0.3.0.
 
 - MIT license added, with an explicit no-attribution grant on the generated `wysiwyg_motion_fx.rpy`.
-- The Show Code panel no longer previews lines the save would not write: unchanged characters read "unchanged - will not be written", and the scene line is marked as never rewritten instead of being shown as a stripped-down preview. What the panel displays now branches on the same predicate the save loop uses.
+- The Show Code panel no longer previews lines the save would not write: unchanged characters read "unchanged - will not be written", the scene line is marked as never rewritten, and files whose saving is disabled after a failed write say so. What the panel displays branches on the same predicate the save loop uses.
+- Release-hardening pass (two thorough review rounds over the UI, docs and hostile environments; ~30 findings fixed). Highlights: `game/wysiwyg_backups/` and `wysiwyg_debug.txt` are excluded from built distributions; a forgotten editor file no longer swallows F5 in shipped builds; Esc/right-click no longer open the game menu over unsaved editor work; tooltips are actually rendered now (hover help in the status corner); the debug log is UTF-8 and capped at 2 MB; the Code Compare panel scales below 1080p and stops re-reading files from disk on every hover; sprites whose tag the importer skips (`ui`, `black`, ...) are refused at add time instead of being orphaned after a save; every misleading UI string and README claim found by the audit was reworded to match what the code does.
 - Version bumped to 1.0.0 to mark the feature set as final: fixes will keep coming, new features are not planned.
 
 ### 0.3.0 (2026-07-03)
@@ -221,7 +220,7 @@ Added:
 - Per-save backups with write verification: every save re-parses the touched file with the engine parser and restores the backup automatically when parsing fails.
 - Locked characters: animated ATL blocks and custom transforms stay live on screen and are never rewritten.
 - Uncertain-source gate: characters matched by scanning the script (empty line log after autoreload or loading) need an extra confirmation before their lines are rewritten, and known-good sources are carried over across the editor's own save-autoreload cycle.
-- A permanent headless test suite (9 cases, `python tests/run_tests.py`) covering round-trips, backups, inserts, removal, the close gate and the confirmation gates.
+- A permanent automated test suite (9 cases, `python tests/run_tests.py`; each case drives a real Ren'Py window unattended) covering round-trips, backups, inserts, removal, the close gate and the confirmation gates.
 - `[SAVE-ERROR]` entries in `game/wysiwyg_debug.txt`, so failed saves can be diagnosed after the fact.
 
 Changed:
@@ -241,9 +240,3 @@ Safety hardening: developer-build gate, pre-save line verification, scene restor
 ### 0.2.0
 
 First public version: drag-and-drop placement, rotation and scale, color filters, Motion FX, grid, undo, Code Compare, in-place source rewriting.
-
----
-
-## License
-
-This project is open-source and free to use in any personal or commercial Ren'Py game.

@@ -4,7 +4,8 @@ Each directory under cases/ is a small, self-contained Ren'Py project with
 a self-test label that exercises one area of the editor and writes its
 findings to game/selftest_result.txt. This script copies every case into a
 scratch build directory, drops the current editor file in, runs the game
-headlessly, and checks the output against the case's expect.txt.
+unattended (a real Ren'Py window opens for a few seconds per case), and
+checks the output against the case's expect.txt.
 
 Usage:
     python run_tests.py [--sdk PATH] [--case NAME] [--keep]
