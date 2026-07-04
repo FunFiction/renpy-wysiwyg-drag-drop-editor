@@ -4871,8 +4871,9 @@ screen wysiwyg_p_code():
                         text "What Save Changes will write back." style "wysiwyg_small_text"
                         if wysiwyg_bg:
                             text "Scene" style "wysiwyg_small_text"
-                            text wysiwyg_wrap_path(wysiwyg_scene_line()) style "wysiwyg_small_text" xsize 160
+                            text "unchanged - the scene line is never rewritten" style "wysiwyg_small_text" xsize 160
                         for _wch in wysiwyg_chars:
+                            $ _save_kind = wysiwyg_char_save_kind(_wch)
                             frame:
                                 background (Solid("#2d6f9588") if _wch.get("tag") == wysiwyg_selected_tag else Solid("#00000044"))
                                 padding (6, 6)
@@ -4882,8 +4883,12 @@ screen wysiwyg_p_code():
                                     text wysiwyg_wrap_path(_wch.get("image")) style "wysiwyg_small_text"
                                     if _wch.get("locked"):
                                         text wysiwyg_wrap_path("locked (" + str(_wch.get("locked")) + ") - never rewritten") style "wysiwyg_small_text" xsize 148
-                                    elif _wch.get("pending_hide"):
+                                    elif _save_kind == "removed":
                                         text wysiwyg_wrap_path("hide " + str(_wch.get("tag")) + "  (inserted before the current statement)") style "wysiwyg_small_text" xsize 148
+                                    elif _save_kind == "added":
+                                        text wysiwyg_wrap_path(wysiwyg_position_line_for_char(_wch) + "  (new line inserted)") style "wysiwyg_small_text" xsize 148
+                                    elif _save_kind is None:
+                                        text "unchanged - will not be written" style "wysiwyg_small_text" xsize 148
                                     else:
                                         text wysiwyg_wrap_path(wysiwyg_position_line_for_char(_wch)) style "wysiwyg_small_text" xsize 148
                         if wysiwyg_scene_with_dirty(wysiwyg_scene_with):
