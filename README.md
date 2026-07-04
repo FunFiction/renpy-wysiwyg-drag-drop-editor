@@ -4,6 +4,8 @@ A single-file overlay tool for Ren'Py games. You arrange, rotate, scale, animate
 
 Instead of editing coordinates in a text editor and relaunching the game to check them, press **F5**, drag the characters where you want them, and save.
 
+**Requires:** Ren'Py 8.5.x (developed and tested on 8.5.3; older versions untested, 7.x will not work). **Quick start:** copy `game/wysiwyg_editor.rpy` into your project's `game/` folder, run the game in developer mode, press **F5**.
+
 ---
 
 ## Screenshots
@@ -119,6 +121,8 @@ Instead of editing coordinates in a text editor and relaunching the game to chec
 1. Copy the file `wysiwyg_editor.rpy` into the `game/` directory of your Ren'Py project.
 2. Launch the game.
 3. Press **F5** during play to open the editor.
+
+To uninstall, delete `wysiwyg_editor.rpy` (and its `.rpyc`). If you used Motion FX, keep the generated `wysiwyg_motion_fx.rpy` so saved lines keep working; `wysiwyg_backups/` and `wysiwyg_debug.txt` can go whenever you like.
 
 ---
 
