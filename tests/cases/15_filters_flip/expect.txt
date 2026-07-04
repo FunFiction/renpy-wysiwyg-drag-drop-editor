@@ -1,0 +1,20 @@
+# run 1 applies filters + flip and saves; run 2 re-imports the rewritten
+# line and must get the same values back through the matrixcolor parser
+RUNS 2
+NOMATCH EXC
+FILEMATCH selftest_run1.txt SAVE: Saved 1 changed line\(s\), verified
+FILENOMATCH selftest_run1.txt EXC
+# values parsed back from the saved line
+MATCH R2-BRIGHT: 0\.3
+MATCH R2-SAT: 0\.5
+MATCH R2-HUE: 90\.0
+MATCH R2-CONTRAST: 1\.2
+MATCH R2-BLUR: 5\.0
+MATCH R2-SEPIA: True
+# the horizontal flip survives as a negative xzoom
+MATCH R2-XZOOM: -1\.0
+# a filtered+flipped line written by the editor re-imports as editable
+MATCH R2-LOCKED: None
+# the saved line carries the filter expressions
+FILEMATCH script.rpy show eileen happy at Transform\(.*matrixcolor=
+FILEMATCH script.rpy xzoom=-1

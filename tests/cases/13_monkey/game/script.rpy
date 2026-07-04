@@ -122,6 +122,21 @@ init python:
                 out.append("PARSE-CHECKS: " + " | ".join(parse_failures[:5]))
             else:
                 out.append("PARSE-CHECKS: all clean")
+            # memory bounds: every growable structure must stay capped
+            bounds = []
+            if len(store.wysiwyg_undo_stack) > 50:
+                bounds.append("undo_stack=" + str(len(store.wysiwyg_undo_stack)))
+            if len(WYSIWYG_RUNTIME.exec_log) > 4000:
+                bounds.append("exec_log=" + str(len(WYSIWYG_RUNTIME.exec_log)))
+            try:
+                engine_log_len = len(renpy.game.context().line_log)
+            except Exception:
+                engine_log_len = 0
+            if engine_log_len > 4100:
+                bounds.append("engine_line_log=" + str(engine_log_len))
+            if len(WYSIWYG_RUNTIME.source_text_cache) > 200:
+                bounds.append("source_text_cache=" + str(len(WYSIWYG_RUNTIME.source_text_cache)))
+            out.append("MEM-BOUNDS: " + ("; ".join(bounds) if bounds else "all capped"))
         except Exception:
             out.append("EXC:\n" + traceback.format_exc())
         with io.open(os.path.join(config.gamedir, "selftest_result.txt"), "w", encoding="utf-8") as f:

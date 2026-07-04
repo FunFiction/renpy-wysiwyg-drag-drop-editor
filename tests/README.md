@@ -33,6 +33,7 @@ Ren'Py SDK (default: the 8.5.3 SDK path, or the RENPY_SDK env var).
 | 12_dziwna ścieżka | the whole project under a directory with a space and Polish diacritics: source rewrite, backup tree, and the motion fx companion file all land correctly |
 | 13_monkey | seeded-random monkey test: 41 random operations per run (moves, transforms, motion fx, add, remove, undo, reset, re-import, save) with invariants checked after every save - the file must parse, the locked character's line must stay byte-identical, structural markers must survive. Run 2 replays a different seeded sequence on the file run 1 rewrote |
 | 14_undo | undo semantics through the real UI functions: one op of every undoable class (nudge, rotate, scale, alpha, filter, motion fx, position preset) undone step by step back to the baseline with exact-value checks, the 50-entry cap, the empty-stack hint message, and the designed rule that undo reverts an added sprite's edits but never removes the sprite |
+| 15_filters_flip | color filters and flip round-trip: brightness/saturation/hue/contrast/blur/sepia applied through the real setters plus a horizontal flip, saved, then re-imported in a second run - the values parsed back from the rewritten line must match, the line must stay editable, and the flip must survive as a negative xzoom |
 
 Ren'Py opens a real window for a few seconds per case; the whole suite
 takes about a minute.

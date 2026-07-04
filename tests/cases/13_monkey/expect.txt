@@ -4,6 +4,9 @@ RUNS 2
 NOMATCH EXC
 MATCH OPS: 41
 MATCH PARSE-CHECKS: all clean
+# growable structures (undo stack, session exec log, engine line log,
+# source-line cache) must all stay within their caps
+MATCH MEM-BOUNDS: all capped
 # the animated character's line survives every random sequence untouched
 FILEMATCH script.rpy show ben calm at wobble$
 # structural markers survive
