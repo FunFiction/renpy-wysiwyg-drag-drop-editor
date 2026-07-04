@@ -70,7 +70,7 @@ init -2 python:
     import math
     import time
 
-    WYSIWYG_VERSION = "0.3.0"
+    WYSIWYG_VERSION = "1.0.0"
     WYSIWYG_BLACKLIST = set(["black", "white", "text", "vtext", "side", "icon", "ui", "button"])
 
     class _WysiwygRuntime:
@@ -3187,6 +3187,10 @@ init -2 python:
         "# Standalone definitions of the wysiwyg_*_motion transforms used by\n"
         "# saved show statements. Ship this file with the game (or keep the\n"
         "# editor installed) so those statements keep working.\n"
+        "#\n"
+        "# This generated file may be used, modified and distributed without\n"
+        "# restriction and without attribution, in any project, commercial or\n"
+        "# not. (The editor itself is MIT-licensed; this grant is broader.)\n"
     )
 
     # Keep in sync with the `transform wysiwyg_*_motion` section further

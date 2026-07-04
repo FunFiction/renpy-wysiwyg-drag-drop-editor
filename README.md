@@ -1,4 +1,4 @@
-# Ren'Py Drag-and-Drop WYSIWYG Editor (v0.3.0)
+# Ren'Py Drag-and-Drop WYSIWYG Editor (v1.0.0)
 
 A single-file overlay tool for Ren'Py games. You arrange, rotate, scale, animate and filter sprites visually while the game runs, and the editor writes the result straight back into your `.rpy` source files.
 
@@ -187,7 +187,25 @@ Read this section before trusting the tool with a project that has no version co
 
 ---
 
+## License
+
+MIT — see [LICENSE](LICENSE). In practice:
+
+- The editor is free, for commercial and non-commercial projects alike.
+- Everything it writes into your `.rpy` files is yours, with no strings attached.
+- The generated `game/wysiwyg_motion_fx.rpy` may ship inside any game, commercial or not, with no attribution required (the file says so in its own header).
+- Ren'Py itself is licensed separately (MIT plus LGPL components); see the [Ren'Py license](https://www.renpy.org/doc/html/license.html) when distributing a built game.
+
+---
+
 ## Changelog
+
+### 1.0.0 (2026-07-04)
+
+Feature-complete release; no functional changes since 0.3.0.
+
+- MIT license added, with an explicit no-attribution grant on the generated `wysiwyg_motion_fx.rpy`.
+- Version bumped to 1.0.0 to mark the feature set as final: fixes will keep coming, new features are not planned.
 
 ### 0.3.0 (2026-07-03)
 
