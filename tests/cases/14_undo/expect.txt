@@ -1,0 +1,12 @@
+NOMATCH EXC
+# every op class actually changed state (no OP-NOCHANGE lines)
+NOMATCH OP-NOCHANGE
+# each undo restored the exact pre-op snapshot, in reverse order
+MATCH UNDO-CHAIN: all restored
+# the stack keeps 50 entries: 60 nudges minus 50 undos leaves 10px
+MATCH CAP-LEFTOVER: 10
+# the empty-stack message explains what undo does not cover
+MATCH CAP-STATUS: Nothing to undo\. Undo covers edits only
+# an added sprite: its edit is undone, the sprite itself stays
+MATCH ADD-X-RESTORED: True
+MATCH ADD-STILL-THERE: True
