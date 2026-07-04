@@ -188,6 +188,12 @@ Read this section before trusting the tool with a project that has no version co
 
 ---
 
+## Bugs and feedback
+
+Open a GitHub issue. The three things that make a report actionable: your Ren'Py version, the `show`/`scene` snippet the editor mishandled, and `game/wysiwyg_debug.txt` (it records what the editor actually wrote, line by line). If a save went wrong, your pre-save file is in `game/wysiwyg_backups/`.
+
+---
+
 ## License
 
 MIT - see [LICENSE](LICENSE). In practice:

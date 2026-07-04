@@ -3,17 +3,19 @@
 Every directory under `cases/` is a tiny, self-contained Ren'Py project.
 Each one plays a scene, drives the editor from a self-test function
 (import, edit, save, close) and writes what happened to
-`game/selftest_result.txt`. The runner copies each case to `build/`,
-drops the current `game/wysiwyg_editor.rpy` in, runs the game headlessly
-and checks the output against the case's `expect.txt`.
+`game/selftest_result.txt`. The runner copies each case to a scratch
+build directory, drops the current `game/wysiwyg_editor.rpy` in, runs
+the game unattended (a real Ren'Py window opens for a few seconds per
+case) and checks the output against the case's `expect.txt`.
 
 Run everything:
 
     python run_tests.py
 
-Useful flags: `--case NAME` runs a single case, `--keep` leaves the build
-directory of passing cases on disk, `--sdk PATH` points at a different
-Ren'Py SDK (default: the 8.5.3 SDK path, or the RENPY_SDK env var).
+The runner needs a Ren'Py 8.5.x SDK: set the `RENPY_SDK` environment
+variable to the SDK directory (the one containing `renpy.exe`) or pass
+`--sdk PATH`. Other flags: `--case NAME` runs a single case, `--keep`
+leaves the build directory of passing cases on disk.
 
 ## Cases
 

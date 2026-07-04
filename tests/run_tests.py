@@ -43,7 +43,7 @@ def rmtree_retry(path, attempts=5):
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 EDITOR = os.path.join(REPO, "game", "wysiwyg_editor.rpy")
-DEFAULT_SDK = r"<your-renpy-sdk-path>"
+DEFAULT_SDK = os.environ.get("RENPY_SDK", "")
 
 
 def read_expectations(path):
@@ -130,10 +130,16 @@ def run_case(name, case_dir, build_root, sdk, keep):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--sdk", default=os.environ.get("RENPY_SDK", DEFAULT_SDK))
+    parser.add_argument("--sdk", default=DEFAULT_SDK,
+                        help="Ren'Py SDK directory (or set the RENPY_SDK env var)")
     parser.add_argument("--case", default=None, help="run only this case")
     parser.add_argument("--keep", action="store_true", help="keep build dirs")
     args = parser.parse_args()
+
+    if not args.sdk or not os.path.exists(os.path.join(args.sdk, "renpy.exe")):
+        print("Ren'Py SDK not found. Pass --sdk PATH or set the RENPY_SDK "
+              "environment variable to your SDK directory (the one with renpy.exe).")
+        return 2
 
     cases_dir = os.path.join(HERE, "cases")
     # outside the repo: Dropbox sync would lock files under tests/
