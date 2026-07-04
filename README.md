@@ -10,29 +10,25 @@ Instead of editing coordinates in a text editor and relaunching the game to chec
 
 ## Screenshots
 
-### 1. Initial Launch Overlay (F5)
-![Initial Launch](assets/editor_menu_01.jpg)
-*The editor overlay right after opening it with F5.*
+### 1. Scene imported (F5, then Import Scene)
+![Scene imported](assets/editor_menu_01.jpg)
+*The editor opened over the running game: two characters read from the current scene, ready to edit.*
 
-### 2. Main Interface (After Scene Import)
-![Main Interface](assets/editor_menu_02.jpg)
-*The main panel displaying imported sprites, character lists, and basic layout buttons.*
+### 2. Adding a sprite from `game/images/`
+![Sprite browser](assets/editor_menu_02.jpg)
+*The "+ Add" browser lists the images folder with search and grouping; hovering an entry shows a live preview.*
 
-### 3. Color Filters Menu in Action
-![Color Filters Menu](assets/editor_menu_03.jpg)
-*Real-time rendering of filters including blur, brightness, contrast, saturation, hue shift, inversion, and sepia.*
+### 3. New sprite in place, another character moved
+![New sprite placed](assets/editor_menu_03.jpg)
+*The added sprite sits in the scene like any other character, and a second one has been dragged to a new spot (grid on).*
 
-### 4. Motion FX Animations
-![Motion FX Menu](assets/editor_menu_04.jpg)
-*Configuring dynamic animations like breathe, shake, float, sway, bounce, sink, and blink with custom strengths.*
+### 4. Code Compare (Show Code)
+![Code Compare](assets/editor_menu_04.jpg)
+*Original source lines next to what Save Changes will write: untouched characters are marked "will not be written", the added sprite gets a new inserted line.*
 
-### 5. Advanced Transformations (Rotation & Scaling)
-![Transformations](assets/editor_menu_05.jpg)
-*Demonstration of precise rotation adjustments, linked/unlinked scaling, and image flipping.*
-
-### 6. Code Compare Panel (Show Code)
-![Code Compare](assets/editor_menu_06.jpg)
-*Side-by-side comparison of the original script lines vs. the newly generated code before writing to disk.*
+### 5. Transforms and the close confirmation
+![Close confirmation](assets/editor_menu_05.jpg)
+*A character scaled down, rotated and made semi-transparent - and the confirmation you get when closing with unsaved changes.*
 
 ---
 
