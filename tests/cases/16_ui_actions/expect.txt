@@ -1,0 +1,32 @@
+# run 1 writes an editor-style line (originals for run 2); run 2 drives
+# every UI action the coverage audit found untested
+RUNS 2
+NOMATCH EXC
+FILEMATCH selftest_run1.txt SAVE: Saved 1 changed line\(s\), verified
+# A) inline edit fields
+MATCH POS-EDIT: 500,400
+MATCH ROT-BAD: Rotation must be a number\. rotate=30\.0
+MATCH ROT-COMMA: 45\.5
+MATCH SCALE-EDIT: 0\.6/0\.6
+MATCH POS-CANCEL: True field=None
+MATCH WITHSEC: Dissolve\(0\.75\)
+MATCH WITHSEC-BAD: Dissolve time must be greater than 0, up to 30 seconds\. expr=Dissolve\(0\.75\)
+# B) reset flavors: to script originals vs to neutral defaults
+MATCH RESET-ORIG: rot=30\.0 zoom=0\.8 alpha=0\.7
+MATCH RESET-DEF: rot=0\.0 zoom=1\.0 alpha=1\.0
+MATCH FILTER-KEY: hue=0\.0 bright=0\.4
+MATCH FILTER-DEF: bright=0\.0
+MATCH MOTION-DEF: none
+# C) scale lock
+MATCH UNLINKED: 0\.5/1\.0
+MATCH RELINKED: 0\.5/0\.5
+# D) a whole slider grab costs exactly one undo entry
+MATCH SLIDER-UNDO-ENTRIES: 1
+MATCH SLIDER-UNDONE: 10\.0
+# E) Clear Editor wipes state, never files
+MATCH CLEAR: chars=0 file_same=True status=Editor cleared
+# F) close-gate buttons
+MATCH GATE-UP: True active=True
+MATCH GATE-SAVE: Saved 1 changed line\(s\), verified.* active=True gate=None
+MATCH CLOSED-CLEAN: active=False
+MATCH GATE-DISCARD: active=False file_same=True
