@@ -3887,7 +3887,7 @@ transform wysiwyg_blink_motion(strength=1.0):
                 store.wysiwyg_saved_runtime = False
                 wysiwyg_set_status("Undid last move.")
                 return
-        wysiwyg_set_status("Nothing to undo.")
+        wysiwyg_set_status("Nothing to undo. Undo covers edits only - to take an added sprite out of the scene, use its Del button.")
 
     def wysiwyg_nudge_selected(dx, dy):
         char = wysiwyg_find_char(store.wysiwyg_selected_tag)

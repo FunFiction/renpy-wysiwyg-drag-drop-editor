@@ -61,7 +61,7 @@ Instead of editing coordinates in a text editor and relaunching the game to chec
 - **Motion FX Animations**: Toggle built-in animated effects (breathe, shake, float, sway, bounce, sink, blink) with adjustable strength.
 - **Grid Overlay**:
   - Toggleable background grid overlay with 100px steps to help with visual alignment.
-- **Undo Stack**: Maintains a history of up to 50 operations.
+- **Undo Stack**: Maintains a history of up to 50 edits (position, transforms, filters, Motion FX). Adding and removing characters is not on the undo stack: an added sprite is taken out with its **Del** button (an added-but-unsaved sprite is discarded without a trace), and a removal mark is taken back with **Undo remove**.
 - **Code Compare Panel**: View your original source lines side-by-side with the generated code before writing to disk.
 
 ---
@@ -72,7 +72,7 @@ Instead of editing coordinates in a text editor and relaunching the game to chec
 - **Characters** tab: Selects the character editing panel.
 - **Import Scene**: Scans the active Ren'Py master layer, finds the exact source files and lines, and loads the sprites into the editor.
 - **Save Changes**: Rewrites the mapped lines in your `.rpy` files in-place with the updated `Transform` code. A `●` dot on the button means there are unsaved changes.
-- **Undo**: Undoes the last modification (holds up to 50 steps).
+- **Undo**: Undoes the last edit (up to 50 steps; covers moves, transforms, filters and Motion FX, not adding/removing characters).
 - **Show Code**: Opens the side-by-side code comparison panel to preview modifications before writing to disk.
 - **Grid**: Toggles a background grid with 100px steps.
 - **Clear Editor**: Resets the editor state, discarding all unsaved transformations.
