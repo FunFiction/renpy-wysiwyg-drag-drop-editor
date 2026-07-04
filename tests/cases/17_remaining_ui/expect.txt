@@ -1,0 +1,20 @@
+NOMATCH EXC
+MATCH IMPORT: Imported 2 character\(s\)
+MATCH STATUS: status probe
+# selecting another character cancels a half-typed edit field
+MATCH SELECT: tag=lucy field=None
+MATCH PANEL: characters>code>characters
+# the gate's Show Code shortcut clears the gate and opens the panel
+MATCH REVIEW: gate=None panel=code
+# browser opens with rows built from game/images/, closes back to main
+MATCH BROWSER: page=add rows=2
+MATCH GROUP: True>False
+MATCH BROWSER-CLOSED: page=main
+MATCH SEPIA: True>False
+MATCH PREVIEW-HIDE: True>False
+# slider callbacks clamp out-of-range values
+MATCH FILTER-CLAMP: hue=180\.0 blur=0\.0
+MATCH MOTION-CLAMP: fx=float strength=2\.0
+MATCH RESET-POS: True
+# tracked tags are taken off the master layer for the preview
+MATCH MASTER-HIDDEN: True

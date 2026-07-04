@@ -35,6 +35,9 @@ Ren'Py SDK (default: the 8.5.3 SDK path, or the RENPY_SDK env var).
 | 14_undo | undo semantics through the real UI functions: one op of every undoable class (nudge, rotate, scale, alpha, filter, motion fx, position preset) undone step by step back to the baseline with exact-value checks, the 50-entry cap, the empty-stack hint message, and the designed rule that undo reverts an added sprite's edits but never removes the sprite |
 | 15_filters_flip | color filters and flip round-trip: brightness/saturation/hue/contrast/blur/sepia applied through the real setters plus a horizontal flip, saved, then re-imported in a second run - the values parsed back from the rewritten line must match, the line must stay editable, and the flip must survive as a negative xzoom |
 | 16_ui_actions | the UI actions a coverage audit found untested: inline edit fields (position "x, y" parsing, comma decimals, validation errors, cancel), the four reset flavors (script originals vs neutral defaults, per-filter vs all-filters, motion), scale lock/unlock semantics, slider grab = exactly one undo entry, Clear Editor (state wiped, file untouched), and the close-gate buttons (save-from-gate, clean close, discard) |
+| 17_remaining_ui | the last audit stragglers, completing 42/42 screen-action coverage: status display, selection cancelling a half-typed edit field, code panel toggle, the uncertain-gate Show Code shortcut, image browser open/close and group folding, sepia and preview-hide toggles, slider clamp callbacks, the reset-position wrapper, and hide_master_chars |
+
+`python coverage_audit.py` (in this directory) lists any screen-action callable no test touches; it currently reports 0 of 42.
 
 Ren'Py opens a real window for a few seconds per case; the whole suite
 takes about a minute.
