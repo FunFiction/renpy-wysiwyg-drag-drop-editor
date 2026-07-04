@@ -31,6 +31,7 @@ Ren'Py SDK (default: the 8.5.3 SDK path, or the RENPY_SDK env var).
 | 10_hostile_source | non-ASCII (Polish/Japanese) content around every edited line, explicit `zorder`/`onlayer` clauses and a unicode trailing comment surviving a rewrite, inserts into a file with no trailing newline, and a second run that re-parses the rewritten file from scratch and asserts its runtime effect |
 | 11_first_click | the first five minutes of a new user: Import before any scene exists, Save with nothing imported, F5 spam, and a save into a read-only script file (error surfaced, file untouched, no false restore warnings, file disabled until restart) |
 | 12_dziwna ścieżka | the whole project under a directory with a space and Polish diacritics: source rewrite, backup tree, and the motion fx companion file all land correctly |
+| 13_monkey | seeded-random monkey test: 41 random operations per run (moves, transforms, motion fx, add, remove, undo, reset, re-import, save) with invariants checked after every save - the file must parse, the locked character's line must stay byte-identical, structural markers must survive. Run 2 replays a different seeded sequence on the file run 1 rewrote |
 
 Ren'Py opens a real window for a few seconds per case; the whole suite
 takes about a minute.

@@ -1,0 +1,11 @@
+# two runs: run 2 replays a different seeded sequence on the file run 1
+# already rewrote (the seed derives from the file content)
+RUNS 2
+NOMATCH EXC
+MATCH OPS: 41
+MATCH PARSE-CHECKS: all clean
+# the animated character's line survives every random sequence untouched
+FILEMATCH script.rpy show ben calm at wobble$
+# structural markers survive
+FILEMATCH script.rpy MARKER-A: ta linia musi przetrwac
+FILEMATCH script.rpy MARKER-B: i ta rowniez\.
