@@ -1304,7 +1304,7 @@ init -2 python:
         adjusted_x = cx - w / 2.0
 
         if abs(wysiwyg_float(char.get("x", 0.0), 0.0) - adjusted_x) < 0.01:
-            wysiwyg_set_status("Already at the " + str(target_name) + " position.")
+            wysiwyg_set_status("Already at the '" + str(target_name) + "' position.")
             return
 
         wysiwyg_push_undo(char)
@@ -1313,7 +1313,7 @@ init -2 python:
         char["parsed_center_x"] = cx
         char["parsed_x"] = True
         store.wysiwyg_saved_runtime = False
-        wysiwyg_set_status("Placed at the " + str(target_name) + " position.")
+        wysiwyg_set_status("Placed at the '" + str(target_name) + "' position.")
 
     def wysiwyg_current_image_name(tag):
         try:
