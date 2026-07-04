@@ -73,12 +73,15 @@ Instead of editing coordinates in a text editor and relaunching the game to chec
 ### 1. Global Toolbar (Top)
 - **Characters** tab: Selects the character editing panel.
 - **Import Scene**: Scans the active Ren'Py master layer, finds the exact source files and lines, and loads the sprites into the editor.
-- **Save Changes**: Rewrites the mapped lines in your `.rpy` files in-place with the updated `Transform` code.
+- **Save Changes**: Rewrites the mapped lines in your `.rpy` files in-place with the updated `Transform` code. A `●` dot on the button means there are unsaved changes.
 - **Undo**: Undoes the last modification (holds up to 50 steps).
 - **Show Code**: Opens the side-by-side code comparison panel to preview modifications before writing to disk.
 - **Grid**: Toggles a background grid with 100px steps.
 - **Clear Editor**: Resets the editor state, discarding all unsaved transformations.
 - **Close**: Exits the editor and restores the scene to its last saved/imported state. With unsaved work it first opens the confirmation described above.
+
+> [!NOTE]
+> The `●` dot is the editor's "something here" marker: on **Save Changes** it means unsaved changes exist, next to the selected character's name it means that character has unsaved edits, and on the **Color Filters** / **Motion FX** section buttons it means the selected character has an active filter or motion.
 
 ### 2. Base Controls Panel
 - **Reset Pos**: Restores the character's X and Y coordinates to their last imported/saved state (a save becomes the new baseline).
@@ -187,7 +190,7 @@ Read this section before trusting the tool with a project that has no version co
 
 ## License
 
-MIT — see [LICENSE](LICENSE). In practice:
+MIT - see [LICENSE](LICENSE). In practice:
 
 - The editor is free, for commercial and non-commercial projects alike.
 - Everything it writes into your `.rpy` files is yours, with no strings attached.

@@ -89,7 +89,7 @@ init -2 python:
             self.image_browser = None
             # True execution-ordered line log (newest last, duplicates kept).
             # The engine's own line log deduplicates entries, so its order is
-            # first-execution order — wrong for "which show ran most
+            # first-execution order - wrong for "which show ran most
             # recently" in games that loop labels.
             self.exec_log = []
             self.exec_log_registered = False
@@ -128,7 +128,7 @@ init -2 python:
 
     def wysiwyg_line_log_callback(entry):
         # Fires from LineLogEntry.__init__ on EVERY executed statement,
-        # before the engine deduplicates — this is the true most-recent
+        # before the engine deduplicates - this is the true most-recent
         # execution order the engine log cannot provide.
         log = WYSIWYG_RUNTIME.exec_log
         try:
@@ -1509,7 +1509,7 @@ init -2 python:
         # The parsed source line can be a *different* statement than the one
         # that actually placed the sprite (menu branches, at-transforms, game
         # default anchors), so it is only trusted when it agrees with the live
-        # render within a couple of pixels — in that case the parsed integers
+        # render within a couple of pixels - in that case the parsed integers
         # win, giving an exact, drift-free save/import round trip.
         def _parsed_center(pos_key, anchor_key, img_size, zoom_val, screen_size):
             if pos_key not in transform_data or anchor_key not in transform_data:
