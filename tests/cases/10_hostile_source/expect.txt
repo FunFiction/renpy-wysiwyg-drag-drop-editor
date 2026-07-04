@@ -1,0 +1,27 @@
+# run twice: run 1 edits (details land in selftest_run1.txt, checked via
+# FILEMATCH); run 2 re-parses the rewritten no-trailing-newline unicode
+# file from scratch and asserts the runtime effect of the edits.
+RUNS 2
+NOMATCH EXC
+MATCH SECOND-RUN: rewritten file parsed and executed
+# lucy is hidden by the inserted hide, nowy exists, eileen still there
+MATCH TAG2 nowy:
+MATCH TAG2 eileen:
+NOMATCH TAG2 lucy:
+# run-1 details: explicit clauses imported, both saves verified, no error
+FILEMATCH selftest_run1.txt TAG lucy: zorder=5 onlayer='master' locked=None
+FILEMATCH selftest_run1.txt SAVE-1: Saved .* verified
+FILEMATCH selftest_run1.txt SAVE-2: Saved .* verified
+FILENOMATCH selftest_run1.txt EXC
+# unicode content survives byte-exact
+FILEMATCH script.rpy Zażółć gęślą jaźń, ąćęłńóśźż\.
+FILEMATCH script.rpy 日本語のテキストもここにあります。
+FILEMATCH script.rpy Więcej polskich znaków tuż pod edytowanymi liniami\.
+# explicit clauses survive the rewrite of lucy's line (the editor emits
+# them in its canonical order: onlayer before zorder)
+FILEMATCH script.rpy show lucy mad at Transform\(.*\) onlayer master zorder 5
+# the Polish trailing comment survives on the rewritten line
+FILEMATCH script.rpy onlayer master zorder 5  # komentarz ąę
+# the added sprite and the hide inserted at the no-trailing-newline EOF
+FILEMATCH script.rpy show nowy sprite at Transform\(
+FILEMATCH script.rpy ^\s*hide lucy\s*$

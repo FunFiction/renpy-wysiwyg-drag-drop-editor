@@ -205,6 +205,7 @@ Feature-complete release; the save machinery is unchanged since 0.3.0.
 - MIT license added, with an explicit no-attribution grant on the generated `wysiwyg_motion_fx.rpy`.
 - The Show Code panel no longer previews lines the save would not write: unchanged characters read "unchanged - will not be written", the scene line is marked as never rewritten, and files whose saving is disabled after a failed write say so. What the panel displays branches on the same predicate the save loop uses.
 - Release-hardening pass (two thorough review rounds over the UI, docs and hostile environments; ~30 findings fixed). Highlights: `game/wysiwyg_backups/` and `wysiwyg_debug.txt` are excluded from built distributions; a forgotten editor file no longer swallows F5 in shipped builds; Esc/right-click no longer open the game menu over unsaved editor work; tooltips are actually rendered now (hover help in the status corner); the debug log is UTF-8 and capped at 2 MB; the Code Compare panel scales below 1080p and stops re-reading files from disk on every hover; sprites whose tag the importer skips (`ui`, `black`, ...) are refused at add time instead of being orphaned after a save; every misleading UI string and README claim found by the audit was reworded to match what the code does.
+- Three hostile-scenario test cases added (12 total): non-ASCII scripts with explicit `zorder`/`onlayer` clauses and no trailing newline, a brand-new user's first clicks including a save into a read-only file, and a project under a path with spaces and diacritics. They caught two real issues, both fixed: importing a scene with no editable characters said "Imported 0 character(s)" instead of something helpful, and a save that failed before writing anything warned "AUTO-RESTORE FAILED" about a file that was never touched.
 - Version bumped to 1.0.0 to mark the feature set as final: fixes will keep coming, new features are not planned.
 
 ### 0.3.0 (2026-07-03)
@@ -220,7 +221,7 @@ Added:
 - Per-save backups with write verification: every save re-parses the touched file with the engine parser and restores the backup automatically when parsing fails.
 - Locked characters: animated ATL blocks and custom transforms stay live on screen and are never rewritten.
 - Uncertain-source gate: characters matched by scanning the script (empty line log after autoreload or loading) need an extra confirmation before their lines are rewritten, and known-good sources are carried over across the editor's own save-autoreload cycle.
-- A permanent automated test suite (9 cases, `python tests/run_tests.py`; each case drives a real Ren'Py window unattended) covering round-trips, backups, inserts, removal, the close gate and the confirmation gates.
+- A permanent automated test suite (`python tests/run_tests.py`; each case drives a real Ren'Py window unattended) covering round-trips, backups, inserts, removal, the close gate and the confirmation gates.
 - `[SAVE-ERROR]` entries in `game/wysiwyg_debug.txt`, so failed saves can be diagnosed after the fact.
 
 Changed:

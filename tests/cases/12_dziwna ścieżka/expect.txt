@@ -1,0 +1,8 @@
+NOMATCH EXC
+MATCH IMPORT: Imported 1 character\(s\)
+MATCH SAVE: Saved 1 changed line\(s\), verified
+# the motion fx companion file and a backup were written under the
+# space-and-diacritics path
+MATCH MOTION-FILE: True
+MATCH BACKUPS: 1
+FILEMATCH script.rpy show eileen happy at Transform\(.*wysiwyg_float_motion\(

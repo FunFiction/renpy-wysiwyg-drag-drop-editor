@@ -28,6 +28,9 @@ Ren'Py SDK (default: the 8.5.3 SDK path, or the RENPY_SDK env var).
 | 07_menu_insert | inserting a new sprite while the game waits on a `menu:` |
 | 08_clean_save | a save with no edits leaves files byte-for-byte identical |
 | 09_remove_char | removing characters: `hide` inserted above the paused statement, original show untouched, pending sprites discarded traceless, undo remove, close-without-save leaves the file identical, close gate (unsaved edits open a confirmation; a second request discards and closes) |
+| 10_hostile_source | non-ASCII (Polish/Japanese) content around every edited line, explicit `zorder`/`onlayer` clauses and a unicode trailing comment surviving a rewrite, inserts into a file with no trailing newline, and a second run that re-parses the rewritten file from scratch and asserts its runtime effect |
+| 11_first_click | the first five minutes of a new user: Import before any scene exists, Save with nothing imported, F5 spam, and a save into a read-only script file (error surfaced, file untouched, no false restore warnings, file disabled until restart) |
+| 12_dziwna ścieżka | the whole project under a directory with a space and Polish diacritics: source rewrite, backup tree, and the motion fx companion file all land correctly |
 
 Ren'Py opens a real window for a few seconds per case; the whole suite
 takes about a minute.

@@ -302,6 +302,23 @@ init -2 python:
         except Exception:
             return False
 
+    def wysiwyg_file_matches_backup(filename, backup):
+        # True when the source file already equals its pre-save backup -
+        # i.e. the failed write never changed anything on disk. Restoring
+        # would be pointless, and a restore FAILURE (read-only file, a sync
+        # lock) would tell the user to repair a file that is intact.
+        try:
+            path = wysiwyg_source_path(filename)
+            if not path or not backup or not os.path.exists(path) or not os.path.exists(backup):
+                return False
+            with io.open(path, "r", encoding="utf-8") as handle:
+                current = handle.read()
+            with io.open(backup, "r", encoding="utf-8") as handle:
+                saved = handle.read()
+            return current == saved
+        except Exception:
+            return False
+
     def wysiwyg_verify_file_parses(filename):
         # Re-parses the whole just-saved file with the engine parser. Any
         # error means the save damaged it and the pre-save backup must come
@@ -1803,8 +1820,12 @@ init -2 python:
         if imported or bg_seen:
             if locked_count:
                 message = "Imported " + str(len(editable_chars)) + " editable + " + str(locked_count) + " locked character(s)."
-            else:
+            elif imported:
                 message = "Imported " + str(imported) + " character(s)."
+            else:
+                # A background was matched but no characters: "Imported 0
+                # character(s)" would read like a silent failure.
+                message = "Imported the scene background only - no editable characters found."
             if uncertain:
                 message += " " + str(uncertain) + " with uncertain source line - verify in Show Code before saving."
             if dropped_pending:
@@ -3587,7 +3608,9 @@ transform wysiwyg_blink_motion(strength=1.0):
         for failed_file in failed_now:
             WYSIWYG_RUNTIME.failed_files.add(failed_file)
             backup = batch_backups.get(failed_file)
-            if wysiwyg_restore_backup(failed_file, backup):
+            if wysiwyg_file_matches_backup(failed_file, backup):
+                errors.append(failed_file + ": nothing was written to this file; saving to it is disabled until the game restarts")
+            elif wysiwyg_restore_backup(failed_file, backup):
                 errors.append(failed_file + ": file restored from backup; restart the game before saving it again")
             else:
                 errors.append(failed_file + ": AUTO-RESTORE FAILED, restore manually from " + str(backup))

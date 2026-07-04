@@ -1,0 +1,18 @@
+NOMATCH EXC
+# import before any scene: polite status, zero characters, save refuses
+# (the script scan matches the not-yet-executed scene line, so the honest
+# message is "background only", not "Imported 0 character(s)")
+MATCH EMPTY-IMPORT: Imported the scene background only
+MATCH EMPTY-CHARS: 0
+MATCH EMPTY-SAVE: Nothing to save
+# F5 spam leaves a consistent open/closed state
+MATCH SPAM-ACTIVE: True
+MATCH SPAM-CLOSED: False
+# a read-only script file: save reports the error, the file is untouched,
+# and the message must NOT claim a restore was needed or failed
+MATCH RO-SAVE: .*Permission denied
+MATCH RO-SAVE: .*nothing was written to this file
+NOMATCH AUTO-RESTORE FAILED
+MATCH RO-UNCHANGED: True
+# the retry after unlocking must not crash and must say something
+MATCH RETRY-SAVE: .+
