@@ -209,18 +209,16 @@ MIT - see [LICENSE](LICENSE). In practice:
 
 ### 1.0.0 (2026-07-04)
 
-Feature-complete release; the save machinery is unchanged since 0.3.0.
+Feature-complete release. Version set to 1.0.0 to mark the feature set as final: fixes continue, new features are not planned.
 
-- MIT license added, with an explicit no-attribution grant on the generated `wysiwyg_motion_fx.rpy`.
-- The Show Code panel no longer previews lines the save would not write: unchanged characters read "unchanged - will not be written", the scene line is marked as never rewritten, and files whose saving is disabled after a failed write say so. What the panel displays branches on the same predicate the save loop uses.
-- Release-hardening pass (two thorough review rounds over the UI, docs and hostile environments; ~30 findings fixed). Highlights: `game/wysiwyg_backups/` and `wysiwyg_debug.txt` are excluded from built distributions; a forgotten editor file no longer swallows F5 in shipped builds; Esc/right-click no longer open the game menu over unsaved editor work; tooltips are actually rendered now (hover help in the status corner); the debug log is UTF-8 and capped at 2 MB; the Code Compare panel scales below 1080p and stops re-reading files from disk on every hover; sprites whose tag the importer skips (`ui`, `black`, ...) are refused at add time instead of being orphaned after a save; every misleading UI string and README claim found by the audit was reworded to match what the code does.
-- A seeded-random monkey test (case 13): 41 random editor operations per run, saves included, with invariants checked after every save (the file must still parse, locked lines must stay byte-identical, structural markers must survive); each run replays a different reproducible sequence.
-- Three hostile-scenario test cases added: non-ASCII scripts with explicit `zorder`/`onlayer` clauses and no trailing newline, a brand-new user's first clicks including a save into a read-only file, and a project under a path with spaces and diacritics. They caught two real issues, both fixed: importing a scene with no editable characters said "Imported 0 character(s)" instead of something helpful, and a save that failed before writing anything warned "AUTO-RESTORE FAILED" about a file that was never touched.
-- Version bumped to 1.0.0 to mark the feature set as final: fixes will keep coming, new features are not planned.
+- MIT license, with an explicit no-attribution grant on the generated `wysiwyg_motion_fx.rpy`.
+- The Show Code panel previews exactly what a save will write: unchanged characters are marked "unchanged - will not be written", the scene line is shown as never rewritten, and a file with saving disabled after a failed write says so.
+- Shipped-build safety and polish: `game/wysiwyg_backups/` and `wysiwyg_debug.txt` are excluded from built distributions; the editor never intercepts input (such as F5) in a shipped build; the game menu is blocked over unsaved editor work; tooltips render as hover help in the status corner; the debug log is UTF-8 and size-capped; the Code Compare panel scales at non-1080p resolutions and caches source lines instead of re-reading them; sprites with a reserved tag are refused at add time.
+- Expanded automated test suite (17 scenarios): round-trips, backups, inserts, removal, the gates, plus edge-case scripts (non-ASCII, explicit `zorder`/`onlayer`, read-only files, paths with spaces and diacritics), a seeded-random stress test, and full coverage of the editor's UI actions.
 
 ### 0.3.0 (2026-07-03)
 
-This release replaces the 0.2.1 line published in June. The safety work from 0.2.1 (developer gate, pre-save line verification, restore after autoreload) is included here in a rebuilt and extended form; everything below is new since then. The whole release went through a internal style review (21 findings) and four further full review passes, all findings fixed.
+This release supersedes the 0.2.1 line from June. The safety work from 0.2.1 (developer gate, pre-save line verification, restore after autoreload) is rebuilt and extended here; everything below is new since then.
 
 Added:
 
@@ -242,7 +240,7 @@ Changed:
 
 Fixed:
 
-- Orphaned trailing ATL comments after edits, stale line offsets after multi-line rewrites, and the remaining findings from the review cycles (overlapping confirmation dialogs, a live input keeping keyboard focus behind a dialog, a mouse drag surviving into a frozen dialog, comments leaking into the parsed scene transition, and others).
+- Orphaned trailing ATL comments after edits, stale line offsets after multi-line rewrites, overlapping confirmation dialogs, a live input keeping keyboard focus behind a dialog, a mouse drag surviving into a frozen dialog, and comments leaking into the parsed scene transition.
 
 ### 0.2.1 (2026-06-12)
 
