@@ -1988,8 +1988,15 @@ init -2 python:
             wysiwyg_set_status("Cannot add: image '" + image_name + "' is not defined - restart the game if the file is new.")
             return
         tag = image_name.split()[0]
-        if wysiwyg_find_char(tag):
-            wysiwyg_set_status("Tag '" + tag + "' is already tracked - edit it in On Scene.")
+        existing = wysiwyg_find_char(tag)
+        if existing:
+            # A char marked for removal is still tracked (the hide line is
+            # only written on save), so "edit it in On Scene" would be a
+            # lie for it - name the actual way forward instead.
+            if existing.get("pending_hide"):
+                wysiwyg_set_status("Tag '" + tag + "' is marked for removal - Save Changes first, then add the new image (or Undo remove to keep it).")
+            else:
+                wysiwyg_set_status("Tag '" + tag + "' is already tracked - edit it in On Scene.")
             return
         try:
             showing = set(renpy.get_showing_tags("master"))

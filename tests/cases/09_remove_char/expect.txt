@@ -8,6 +8,8 @@ MATCH DISCARD: Discarded unsaved sprite 'hero'
 MATCH SAVE-AFTER-DISCARD: No changes to save
 MATCH DISCARD-LEAK: \[\]
 MATCH UNDO-REMOVE-SAVE: No changes to save
+# adding a tag that is marked for removal points at the real way forward
+MATCH ADD-WHILE-REMOVED: Tag 'alpha' is marked for removal - Save Changes first
 MATCH REMOVE-SAVE: Saved 1 changed line\(s\), verified
 # the removed character left the editor's scene list
 MATCH STILL-TRACKED: \['beta'\]

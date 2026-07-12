@@ -51,6 +51,10 @@ init python:
 
             # for real now: hide line written, character leaves the editor
             wysiwyg_remove_character("alpha")
+            # adding the same tag while it is marked for removal is refused
+            # with a message that names the actual way forward
+            wysiwyg_add_character("alpha")
+            out.append("ADD-WHILE-REMOVED: " + str(store.wysiwyg_status))
             wysiwyg_save_changes()
             out.append("REMOVE-SAVE: " + str(store.wysiwyg_status))
             out.append("STILL-TRACKED: " + repr(sorted([str(c.get("tag")) for c in store.wysiwyg_chars])))
