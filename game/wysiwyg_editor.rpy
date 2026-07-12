@@ -70,7 +70,7 @@ init -2 python:
     import math
     import time
 
-    WYSIWYG_VERSION = "1.0.0"
+    WYSIWYG_VERSION = "1.0.1"
     WYSIWYG_BLACKLIST = set(["black", "white", "text", "vtext", "side", "icon", "ui", "button"])
 
     class _WysiwygRuntime:
