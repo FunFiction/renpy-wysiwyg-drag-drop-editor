@@ -176,6 +176,17 @@ Characters whose `show` statement uses an **animated or otherwise unsupported AT
 
 Simple placements are not affected: `at left`, `at center`, `at right`, `Transform(...)` calls and ATL blocks that use only the position properties the editor round-trips (`xpos`, `ypos`, `xanchor`, `xalign`, offsets, …) remain fully editable. Anything beyond that set (a `zoom` or `alpha` inside an ATL block, a variable as a property value) locks the character instead of risking a lossy rewrite.
 
+### Editing shared or branching script (loops, random parties, reused labels)
+An insert written by Save Changes (a new sprite's `show`, or the `hide` written for a removal) is a plain statement placed into the scene the game is paused on, with the same indentation as its neighbours and no condition around it. The editor sees one concrete frame of your game; it cannot know that the surrounding code is a loop every mission runs through, or that a character should appear only when she is in the party.
+
+The practical consequences:
+
+- In a linear scene, an insert affects exactly the moment you edited. This is the normal case.
+- In shared code (a loop body, a label reached from several places, an event template), the inserted line runs on every pass: a character added while playing one variant appears in all of them, and a removal hides her in all of them.
+- Rewrites of existing lines are safe anywhere: a moved or restyled `show` is rewritten on its own line, inside whatever `if` block it already lives in, so its condition survives.
+
+To place a character conditionally, use the editor as a coordinate finder: add the sprite, drag it into place, copy the generated line from Show Code, close without saving (an unsaved sprite leaves no trace), and paste the line under the right `if` in your script.
+
 ### The game menu and quit prompt while the editor is open
 While the editor is open, it deliberately swallows the inputs that would advance or leave the game: dismiss clicks, rollback, skipping, and the game menu (Esc / right-click show a status hint instead). If you click the OS window's close **"X"** button, Ren'Py's quit prompt appears underneath the editor's input traps and cannot be clicked. In all cases: close the editor first (**F5** or **Close**), then use the menu or quit.
 
@@ -186,6 +197,7 @@ While the editor is open, it deliberately swallows the inputs that would advance
 Read this section before trusting the tool with a project that has no version control.
 
 - **This is a scene editor, nothing more.** It edits sprite placement, transforms, filters, Motion FX and `with` transitions. It does not edit screens or UI, dialogue text, or animations; statements with animated ATL or custom transforms are imported as locked and left alone.
+- **Inserts are unconditional.** A new `show`, or the `hide` a removal writes, lands in the script as a plain line with no `if` around it. In script that several game states share (a loop, a randomized party, a reused label) that line runs in every variant, not just the one you were playing. Editing an existing line keeps its place and its condition. Details and a safe workflow in Technical Notes.
 - **Developer builds only.** The editor activates only while `config.developer` is True. In a shipped build F5 does nothing, and saved lines keep working through `game/wysiwyg_motion_fx.rpy` even after you delete the editor file.
 - **Saves are not transactional.** A save is a sequence of single-line writes, not one atomic operation. The protection is layered around that fact: a backup of every touched file before the write, a full engine re-parse after it, automatic restore from the backup when the re-parse fails, and a block on further saves to that file until the game restarts. If the game process dies in the middle of a write, put the `.bak` from `game/wysiwyg_backups/` back yourself.
 - **The preview can be a pixel or two off.** For sprites positioned through one of the game's own transforms that includes zoom, the editor's drag preview is an approximation. The line that gets saved is computed from the live render bounds, so the file is right even when the preview is slightly off.
