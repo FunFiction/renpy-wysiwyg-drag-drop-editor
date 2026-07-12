@@ -157,6 +157,13 @@ After writing, the editor immediately re-parses the whole file with Ren'Py's own
 
 To restore an original file manually, replace the modified `.rpy` file with the corresponding `.bak` from `game/wysiwyg_backups/`.
 
+### Saving while autoreload is on (Shift+R)
+Ren'Py has an autoreload mode, toggled with **Shift+R**; while it is on, the window title ends with "- autoreload" and the engine reloads the script whenever a `.rpy` file changes on disk. A save from the editor is exactly such a change, so with autoreload on, Save Changes is followed by an automatic reload a moment later. A reload rewinds the game to the start of the current statement, and that closes the editor: the "editor open" state exists only inside the statement you paused on, so the rewind discards it. Nothing is lost. The save is written and verified before the reload starts, and the refreshed scene already plays the saved script.
+
+To continue editing after the reload, press **F5** and click **Import Scene**. As long as the game is still paused on the same statement, the import reuses the exact source lines from before the reload, so nothing degrades to "uncertain".
+
+If you would rather stay in the editor across saves, press **Shift+R** to turn autoreload off while you lay out scenes. The editor keeps the running game in sync with the file by itself, so no reload is needed to see what a save wrote.
+
 ### Debug log
 The editor appends a line to `game/wysiwyg_debug.txt` for every import, insert, rewrite and save error (`[IMPORT]`, `[INSERT]`, `[HIDE]`, `[SAVE]`, `[SCENE-WITH]`, `[SAVE-ERROR]`). When a save did not do what you expected, this file answers "what did the editor actually write, and where" better than memory does. It is written as UTF-8 and starts over automatically past 2 MB; delete it whenever you like. Both this file and `game/wysiwyg_backups/` are excluded from built distributions.
 
@@ -184,6 +191,7 @@ Read this section before trusting the tool with a project that has no version co
 - **The preview can be a pixel or two off.** For sprites positioned through one of the game's own transforms that includes zoom, the editor's drag preview is an approximation. The line that gets saved is computed from the live render bounds, so the file is right even when the preview is slightly off.
 - **Do not save/load the game mid-edit.** The snapshot used to restore the scene when you close without saving does not survive a save/load cycle inside the editor session. Close the editor first, then use the game's save/load.
 - **Translations are only partly guarded.** Inserting new lines while a `game/tl/` translation is playing is refused. Editing an existing `show` statement whose source already sits inside `game/tl/` is not blocked; do your editing in the base language.
+- **With autoreload on (Shift+R), a save closes the editor.** The engine reloads the script when a `.rpy` file changes on disk, and the editor cannot survive that reload. The save is written and verified first; press F5 and Import Scene to continue where you were. Details in Technical Notes.
 - **The game menu and quit prompt are blocked while the editor is open.** Esc and right-click show a hint instead of the menu (Load/Main Menu would silently discard unsaved editor work), and the window's X button shows a quit prompt that cannot be clicked. Close the editor first (F5), then use the menu or quit. Details in Technical Notes.
 
 ---
