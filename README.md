@@ -1,4 +1,4 @@
-# Ren'Py Drag-and-Drop WYSIWYG Editor (v1.0.1)
+# Ren'Py Drag-and-Drop WYSIWYG Editor (v1.0.2)
 
 A single-file overlay tool for Ren'Py games. You arrange, rotate, scale, animate and filter sprites visually while the game runs, and the editor writes the result straight back into your `.rpy` source files.
 
@@ -226,6 +226,11 @@ MIT - see [LICENSE](LICENSE). In practice:
 ---
 
 ## Changelog
+
+### 1.0.2 (2026-07-26)
+
+- A save now keeps the file's original line-ending style (a file with Unix LF endings stays that way), so version-control diffs show only the edited lines. Files that mix both styles are left as saved.
+- Pre-save backups are byte-for-byte copies of the original file, and auto-restore puts those exact bytes back.
 
 ### 1.0.1 (2026-07-12)
 

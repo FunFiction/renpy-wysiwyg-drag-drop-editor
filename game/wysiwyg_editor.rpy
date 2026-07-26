@@ -70,7 +70,7 @@ init -2 python:
     import math
     import time
 
-    WYSIWYG_VERSION = "1.0.1"
+    WYSIWYG_VERSION = "1.0.2"
     WYSIWYG_BLACKLIST = set(["black", "white", "text", "vtext", "side", "icon", "ui", "button"])
 
     class _WysiwygRuntime:
@@ -265,9 +265,12 @@ init -2 python:
         while os.path.exists(backup):
             backup = os.path.join(backup_dir, base + "." + stamp + "-" + str(counter) + ".bak")
             counter += 1
-        with io.open(path, "r", encoding="utf-8") as handle:
+        # Byte-for-byte copy: a text-mode round-trip would translate the
+        # file's line endings, and the backup could no longer prove what
+        # the file looked like before the save.
+        with io.open(path, "rb") as handle:
             data = handle.read()
-        with io.open(backup, "w", encoding="utf-8") as handle:
+        with io.open(backup, "wb") as handle:
             handle.write(data)
         if path not in WYSIWYG_RUNTIME.first_backup:
             WYSIWYG_RUNTIME.first_backup[path] = backup
@@ -292,10 +295,10 @@ init -2 python:
             path = wysiwyg_source_path(filename)
             if not path or not backup or not os.path.exists(backup):
                 return False
-            with io.open(backup, "r", encoding="utf-8") as handle:
+            with io.open(backup, "rb") as handle:
                 data = handle.read()
             with renpy.loader.auto_lock:
-                with io.open(path, "w", encoding="utf-8") as handle:
+                with io.open(path, "wb") as handle:
                     handle.write(data)
                 renpy.loader.add_auto(path, force=True)
             return True
@@ -311,13 +314,53 @@ init -2 python:
             path = wysiwyg_source_path(filename)
             if not path or not backup or not os.path.exists(path) or not os.path.exists(backup):
                 return False
-            with io.open(path, "r", encoding="utf-8") as handle:
+            with io.open(path, "rb") as handle:
                 current = handle.read()
-            with io.open(backup, "r", encoding="utf-8") as handle:
+            with io.open(backup, "rb") as handle:
                 saved = handle.read()
             return current == saved
         except Exception:
             return False
+
+    def wysiwyg_line_ending_style(data):
+        # "lf" / "crlf" when every line break in `data` uses that style,
+        # None for mixed endings or a file with no line breaks at all.
+        crlf = data.count(b"\r\n")
+        lf = data.count(b"\n")
+        cr = data.count(b"\r")
+        if lf and not cr:
+            return "lf"
+        if crlf and crlf == lf and crlf == cr:
+            return "crlf"
+        return None
+
+    def wysiwyg_restore_line_endings(filename, backup):
+        # The scriptedit primitives read and write sources in TEXT mode, so
+        # every save re-ends the WHOLE file with the OS separator: an all-LF
+        # file comes back all-CRLF on Windows (and the other way around
+        # elsewhere), and a diff shows every line as changed. The engine's
+        # line offsets live in universal-newline space and never see the
+        # difference, so the on-disk endings can be put back afterwards.
+        # The pre-save backup proves which style the file had; mixed endings
+        # have no single style to restore and are left as written.
+        path = wysiwyg_source_path(filename)
+        if not path or not backup or not os.path.exists(path) or not os.path.exists(backup):
+            return
+        with io.open(backup, "rb") as handle:
+            style = wysiwyg_line_ending_style(handle.read())
+        if style is None:
+            return
+        with io.open(path, "rb") as handle:
+            data = handle.read()
+        normalized = data.replace(b"\r\n", b"\n")
+        if style == "crlf":
+            normalized = normalized.replace(b"\n", b"\r\n")
+        if normalized == data:
+            return
+        with renpy.loader.auto_lock:
+            with io.open(path, "wb") as handle:
+                handle.write(normalized)
+            renpy.loader.add_auto(path, force=True)
 
     def wysiwyg_verify_file_parses(filename):
         # Re-parses the whole just-saved file with the engine parser. Any
@@ -3597,6 +3640,18 @@ transform wysiwyg_blink_motion(strength=1.0):
                 wysiwyg_ensure_motion_fx_file()
             except Exception as exc:
                 errors.append("motion fx file: " + str(exc) + " - keep wysiwyg_editor.rpy installed or the saved Motion FX lines will not run without it")
+
+        # Engine writes went through text mode and re-ended every line with
+        # the OS separator; put each touched file's original endings back so
+        # the save only changes the lines it edited. A failure here is not
+        # fatal - the file is intact, only its line endings are translated.
+        for touched_file in batch_backups:
+            if touched_file in failed_now:
+                continue
+            try:
+                wysiwyg_restore_line_endings(touched_file, batch_backups[touched_file])
+            except Exception as exc:
+                wysiwyg_log_debug("[EOL] {0}: {1}".format(touched_file, exc))
 
         # Post-save verification: every touched file must still parse with the
         # engine parser. A failure restores the pre-save backup on the spot

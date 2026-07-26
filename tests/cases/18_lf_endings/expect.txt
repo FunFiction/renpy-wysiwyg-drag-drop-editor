@@ -1,0 +1,10 @@
+# Two runs: the second run's PRECOND-LF proves the first run's save kept
+# the file all-LF on disk (the check happens before the engine touches it).
+RUNS 2
+MATCH PRECOND-LF: True
+MATCH IMPORT: Imported 1 character\(s\)
+MATCH SAVE: Saved 1 changed line\(s\), verified
+NOMATCH EXC
+MATCH EOL-PRESERVED: True
+MATCH FILE-CHANGED: True
+MATCH BACKUP-EXACT: True
